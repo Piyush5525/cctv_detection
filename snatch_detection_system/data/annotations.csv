@@ -1,0 +1,5 @@
+clip_name,label,split
+normal_clip_001.mp4,0,train
+normal_clip_002.mp4,0,train
+snatch_clip_001.mp4,1,train
+snatch_clip_002.mp4,1,val

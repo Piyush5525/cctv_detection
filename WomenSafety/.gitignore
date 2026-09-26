@@ -1,0 +1,41 @@
+# --- IDE / editor ---
+.idea/
+.vscode/
+.ipynb_checkpoints/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+ENV/
+
+# --- Node / frontend ---
+node_modules/
+frontend/build/
+
+# --- Secrets (never commit) ---
+.env
+.env.*
+!.env.example
+
+# --- Model weights (large binaries - add as release assets or remove these lines to include) ---
+*.pt
+*.pth
+*.npy
+*.pkl
+
+# --- Runtime / generated output ---
+outputs/
+results/
+evidence_clips/
+live_frame.jpg
+live_frame.jpg.tmp
+alert.jpg
+*.log
+
+# --- OS ---
+.DS_Store
+Thumbs.db

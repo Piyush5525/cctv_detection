@@ -1,0 +1,64 @@
+# Fall detection config, ported from vjn6805/Fall-Detection-Model config.yaml.
+# Values and comments are unchanged from the source repo. incident/evidence/
+# dashboard sections were dropped — this integration only runs detection +
+# on-screen overlay on the live feed, not the CCTV recording/incident-DB layer.
+
+model:
+  name: yolov8n-pose.pt   # auto-downloaded by ultralytics on first run
+  confidence: 0.4
+  input_size: 640
+
+tracking:
+  tracker: bytetrack       # bytetrack | botsort
+  max_missing_frames: 30   # frames before track is dropped
+  pose_conf_threshold: 0.3 # below this = LOW QUALITY pose
+
+history:
+  max_frames: 90           # rolling buffer length (~3s at 30fps)
+  expiry_seconds: 8.0
+
+fall_detection:
+  # --- Detection confidence gates ---
+  min_pose_confidence: 0.25
+  min_track_age: 8
+
+  # --- Posture signal ---
+  horizontal_torso_angle: 50.0
+  upright_torso_angle: 30.0
+  horizontal_aspect_ratio: 1.3
+
+  # --- Velocity / transition signal ---
+  fall_velocity_threshold: 0.08
+  transition_window_frames: 12
+
+  # --- State machine timing ---
+  possible_fall_frames: 4
+  confirm_fall_seconds: 1.5
+  post_fall_duration_seconds: 10.0
+  recovery_upright_seconds: 2.0
+
+  # --- Motion signal ---
+  stillness_threshold: 6.0
+
+  # --- False-positive reduction ---
+  controlled_transition_seconds: 1.2
+  min_upright_frames_before_fall: 6
+  observability_high_threshold: 0.55
+  observability_low_threshold: 0.30
+  min_visible_keypoints: 5
+  unknown_low_posture_upright_seconds: 1.5
+
+risk_engine:
+  emergency_score_threshold: 0.72
+  emergency_persist_seconds: 3.0
+  emergency_clear_seconds: 4.0
+  time_down_reference_seconds: 15.0
+  inactivity_window_frames: 20
+  inactivity_stillness_px: 8.0
+  recovery_motion_threshold: 15.0
+
+camera:
+  id: CAM-001
+
+logging:
+  event_log: outputs/fall_events.log

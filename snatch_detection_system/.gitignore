@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+bin/
+
+# Project Specific
+outputs/
+data/snatch_clips/
+*.pt
+*.pth
+*.npy
+*.pkl
+*.pptx
+.DS_Store
+.vscode/
+.idea/
+
+# Secrets
+.env
+.env.*
+
+# Python cache
+__pycache__/
+*.py[cod]
