@@ -3,7 +3,7 @@ torchvision==0.17.0
 torch-geometric==2.5.0
 ultralytics==8.1.0
 supervision==0.19.0
-rtmlib==0.1.7
+rtmlib==0.0.16
 scikit-learn==1.4.1.post1
 opencv-python==4.9.0.80
 numpy==1.26.4

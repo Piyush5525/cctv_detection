@@ -181,7 +181,7 @@ def create_incident_from_detection(
     camera_id: str = "CAM-001",
     location_name: str = "MI Road, Jaipur",
     latitude: float = 26.9124,
-    longitude: float = 26.9124,
+    longitude: float = 75.7873,
     timestamp: datetime = None,
 ) -> Optional[IncidentPayload]:
     if timestamp is None:
