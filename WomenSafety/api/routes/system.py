@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
@@ -75,10 +75,12 @@ async def get_system_health():
 
 @router.get("/frame")
 async def get_live_frame():
-    if not LIVE_FRAME_PATH.exists():
+    try:
+        data = LIVE_FRAME_PATH.read_bytes()
+    except OSError:
         raise HTTPException(status_code=404, detail="No live frame available. Start the detection pipeline.")
-    return FileResponse(
-        LIVE_FRAME_PATH,
+    return Response(
+        content=data,
         media_type="image/jpeg",
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",

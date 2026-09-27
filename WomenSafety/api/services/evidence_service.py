@@ -98,12 +98,18 @@ class EvidenceService:
 
         height, width = frames[0].shape[:2]
         # Try codecs in order of browser compatibility
+        out = None
         for fourcc_str in ('avc1', 'H264', 'mp4v', 'XVID'):
             fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
-            out = cv2.VideoWriter(str(clip_path), fourcc, write_fps, (width, height))
-            if out.isOpened():
+            candidate = cv2.VideoWriter(str(clip_path), fourcc, write_fps, (width, height))
+            if candidate.isOpened():
+                out = candidate
                 break
-            out.release()
+            candidate.release()
+
+        if out is None:
+            print(f"[Evidence] No usable video codec for {clip_filename}, skipping clip")
+            return None
 
         for frame in frames:
             out.write(frame)
