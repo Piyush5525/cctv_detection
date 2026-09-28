@@ -1,3 +1,5 @@
+opencode -s ses_f3d19551effewAMV2AA1l9iSpF
+
 cd WomenSafety
 pip install -r requirements.txt
 python run_dashboard.py --mode all

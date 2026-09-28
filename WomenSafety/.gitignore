@@ -21,11 +21,6 @@ frontend/build/
 .env.*
 !.env.example
 
-# --- Model weights (large binaries - add as release assets or remove these lines to include) ---
-*.pt
-*.pth
-*.npy
-*.pkl
 
 # --- Runtime / generated output ---
 outputs/
