@@ -57,6 +57,7 @@ class NotificationService:
         self._call_timers: dict[str, threading.Timer] = {}
         self._bot = None
         self._handlers_registered = False
+        self._tg: dict[str, dict] = {}  # incident_id -> telegram message state
 
     def start(self, start_polling: bool = False) -> None:
         with self._lock:
@@ -119,42 +120,160 @@ class NotificationService:
             self._last_by_key.clear()
             self._calls.clear()
 
-    def handle_callback(self, incident_id: str, action: str) -> bool:
-        """Apply an operator decision from a signed-in bot callback.
+    # ------------------------------------------------------------------
+    # Telegram message state: one entry per alert message so every button
+    # press / escalation timer can edit the SAME message (original caption
+    # kept, status lines appended, buttons that no longer apply removed).
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _stamp() -> str:
+        t = datetime.now().astimezone()
+        offset = t.strftime("%z")
+        return f"{t:%H:%M:%S} UTC{offset[:3]}:{offset[3:]}"
 
-        Callback data is intentionally restricted to the two known actions;
-        anything else is rejected instead of becoming a free-form status API.
-        """
-        if action == "escalate":
-            from api.services import incident_service_v2 as incident_service
-            incident = incident_service.get_incident(incident_id)
-            if incident is None:
-                return False
-            with self._lock:
-                timer = self._call_timers.pop(incident_id, None)
-                if timer is not None:
-                    timer.cancel()
-            self._record(incident_id, "operator", "escalate", "telegram_operator", "immediate escalation requested")
-            threading.Thread(target=self._send_call_if_still_needed, args=(incident_id, incident), daemon=True).start()
-            return True
-        if action not in {"confirm", "false_alarm"}:
-            return False
+    def _tg_register(self, incident_id: str, chat_id, message_id, photo: bool, base: str) -> None:
+        with self._lock:
+            self._tg[incident_id] = {"chat_id": chat_id, "message_id": message_id, "photo": photo, "base": base,
+                                     "lines": [], "ack": False, "fp": False, "call": False}
+
+    def _tg_state_from_message(self, incident_id: str, message) -> Optional[dict]:
+        """After an API restart the in-memory state is gone; rebuild it from the
+        message the press came from (its current text already holds earlier lines)."""
+        if message is None:
+            return None
+        with self._lock:
+            if incident_id not in self._tg:
+                text = getattr(message, "caption", None) or getattr(message, "text", None) or ""
+                self._tg[incident_id] = {"chat_id": message.chat.id, "message_id": message.message_id,
+                                         "photo": bool(getattr(message, "photo", None)), "base": text,
+                                         "lines": [], "ack": False, "fp": False, "call": False}
+            return self._tg[incident_id]
+
+    def _tg_markup(self, incident_id: str, state: dict):
+        import telebot
+        markup = telebot.types.InlineKeyboardMarkup()  # empty keyboard == buttons removed
+        buttons = []
+        if not state["ack"] and not state["fp"]:
+            buttons.append(telebot.types.InlineKeyboardButton("Acknowledge (stops auto-call)", callback_data=f"incident:{incident_id}:confirm"))
+        if not state["fp"]:
+            buttons.append(telebot.types.InlineKeyboardButton("False alarm", callback_data=f"incident:{incident_id}:false_alarm"))
+        if buttons:
+            markup.row(*buttons)
+        if not state["call"] and not state["ack"] and not state["fp"]:
+            markup.row(telebot.types.InlineKeyboardButton("Escalate now", callback_data=f"incident:{incident_id}:escalate"))
+        return markup
+
+    def _tg_edit(self, incident_id: str) -> None:
+        with self._lock:
+            state = self._tg.get(incident_id)
+            if state is None:
+                return
+            text = state["base"] + ("\n\n" + "\n".join(state["lines"]) if state["lines"] else "")
+            text = text[:1020] if state["photo"] else text[:4000]  # Telegram caption limit is 1024
+            snapshot = dict(state)
+        bot = self._get_bot()
+        if bot is None:
+            return
+        try:
+            markup = self._tg_markup(incident_id, snapshot)
+            if snapshot["photo"]:
+                bot.edit_message_caption(text, chat_id=snapshot["chat_id"], message_id=snapshot["message_id"], reply_markup=markup)
+            else:
+                bot.edit_message_text(text, chat_id=snapshot["chat_id"], message_id=snapshot["message_id"], reply_markup=markup)
+        except Exception as exc:
+            if "not modified" not in str(exc).lower():
+                print(f"[Notification] telegram message edit failed: {type(exc).__name__}")
+
+    def _tg_note(self, incident_id: str, line: Optional[str] = None, **flags) -> None:
+        """Append a status line and/or set flags (ack/fp/call), then edit the message."""
+        with self._lock:
+            state = self._tg.get(incident_id)
+            if state is None:
+                return
+            if line:
+                state["lines"].append(line)
+            state.update(flags)
+        self._tg_edit(incident_id)
+
+    def process_press(self, incident_id: str, action: str, presser: Optional[str] = None, message=None, edit: bool = True) -> dict:
+        """Apply one operator button press. Returns {"ok", "answer"}; `answer` is
+        the text for answerCallbackQuery. Unknown incident => "This alert has expired"."""
         from api.services import incident_service_v2 as incident_service
         from api.models.incident_v2 import IncidentStatus, IncidentStatusUpdate
-        update = IncidentStatusUpdate(status=IncidentStatus.CONFIRMED if action == "confirm" else IncidentStatus.FALSE_POSITIVE,
-                                      reviewed_by="telegram_operator", review_note=f"Telegram callback: {action}")
-        changed = incident_service.update_status(incident_id, update)
-        if changed is None:
-            return False
+        name = presser or "operator"
+        if action not in {"confirm", "false_alarm", "escalate"}:
+            return {"ok": False, "answer": "Unknown action"}
+        incident = incident_service.get_incident(incident_id)
+        if incident is None:
+            state = self._tg_state_from_message(incident_id, message)
+            if state is not None:
+                with self._lock:
+                    state["lines"].append(f"This alert has expired (incident no longer exists) - {self._stamp()}")
+                    state.update(ack=True, fp=True, call=True)
+                if edit:
+                    self._tg_edit(incident_id)
+            return {"ok": False, "answer": "This alert has expired"}
+        self._tg_state_from_message(incident_id, message)
+        stamp = self._stamp()
         with self._lock:
             timer = self._call_timers.pop(incident_id, None)
             if timer is not None:
                 timer.cancel()
+        if action == "escalate":
+            self._record(incident_id, "operator", "escalate", "telegram_operator", "immediate escalation requested")
+            self._tg_note_noedit(incident_id, f"Escalate now pressed by {name} at {stamp}")
+            if edit:
+                self._tg_edit(incident_id)
+            threading.Thread(target=self._send_call_if_still_needed, args=(incident_id, incident, "operator"), daemon=True).start()
+            return {"ok": True, "answer": "Escalating: placing the call"}
+        update = IncidentStatusUpdate(status=IncidentStatus.CONFIRMED if action == "confirm" else IncidentStatus.FALSE_POSITIVE,
+                                      reviewed_by="telegram_operator", review_note=f"Telegram callback: {action}")
+        if incident_service.update_status(incident_id, update) is None:
+            return {"ok": False, "answer": "This alert has expired"}
         label = "acknowledged" if action == "confirm" else action
         self._record(incident_id, "operator", label, "telegram_operator", "callback received")
         if timer is not None:
             self._record(incident_id, "call", "cancelled", "configured demo phone", f"automatic call cancelled by operator ({label})")
-        return True
+        suffix = " - automatic call cancelled" if timer is not None else ""
+        if action == "confirm":
+            self._tg_note_noedit(incident_id, f"Acknowledged by {name} at {stamp}{suffix}", ack=True)
+        else:
+            self._tg_note_noedit(incident_id, f"Marked false alarm by {name} at {stamp}{suffix}", fp=True)
+        if edit:
+            self._tg_edit(incident_id)
+        return {"ok": True, "answer": "Acknowledged" if action == "confirm" else "Marked as false alarm"}
+
+    def _tg_note_noedit(self, incident_id: str, line: str, **flags) -> None:
+        with self._lock:
+            state = self._tg.get(incident_id)
+            if state is None:
+                return
+            state["lines"].append(line)
+            state.update(flags)
+
+    def handle_callback(self, incident_id: str, action: str) -> bool:
+        """Compatibility wrapper (no Telegram message context). Callback data is
+        restricted to the three known actions; anything else is rejected."""
+        return bool(self.process_press(incident_id, action)["ok"])
+
+    def _on_callback(self, call) -> None:
+        """Telegram callback_query handler: answer immediately, then edit the message."""
+        parts = str(getattr(call, "data", "")).split(":", 2)
+        bot = self._get_bot()
+        if len(parts) != 3:
+            result = {"ok": False, "answer": "Unknown action"}
+        else:
+            user = getattr(call, "from_user", None)
+            presser = " ".join(x for x in (getattr(user, "first_name", None), getattr(user, "last_name", None)) if x) \
+                or getattr(user, "username", None) or "operator"
+            result = self.process_press(parts[1], parts[2], presser, getattr(call, "message", None), edit=False)
+        try:
+            if bot is not None:
+                bot.answer_callback_query(call.id, result["answer"])
+        except Exception:
+            pass
+        if len(parts) == 3:
+            self._tg_edit(parts[1])
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -232,11 +351,17 @@ class NotificationService:
         if bot is None:
             self._record(incident_id, "telegram", "failed", "configured demo chat", "missing TELEGRAM_BOT_TOKEN")
             return False
-        dispatch = ", ".join(f"{item['service_category']}: {item.get('status')}" for item in plan.get("assignments", []))
-        caption = (f"Incident: {incident['category']}\nCamera: {incident['camera_name']}\nPlace: {incident['place_text']}\n"
-                   f"Time: {incident.get('detected_at', _now())}\nPeak confidence: {incident['detection']['peak_confidence']:.2f}\n"
-                   f"Threshold: {incident['detection']['threshold_applied']:.2f}\nDispatch: {dispatch or 'unavailable'}\n"
-                   "Tap Acknowledge to stop the automatic call; False alarm to dismiss it.")
+        nearest = []
+        for item in plan.get("assignments", []):
+            service = item.get("service") or {}
+            if item.get("status") == "available" and service.get("title"):
+                nearest.append(f"{item.get('service_category')}: {service['title']} ({service.get('distance_km', '?')} km)")
+            else:
+                nearest.append(f"{item.get('service_category')}: unavailable")
+        base = (f"Incident: {incident['category']}\nCamera: {incident['camera_name']}\nPlace: {incident['place_text']}\n"
+                f"Time: {incident.get('detected_at', _now())}\nPeak confidence: {incident['detection']['peak_confidence']:.2f}\n"
+                f"Threshold: {incident['detection']['threshold_applied']:.2f}\nNearest services: {'; '.join(nearest) or 'unavailable'}")
+        caption = base + "\nTap Acknowledge to stop the automatic call; False alarm to dismiss it."
         try:
             import telebot
             markup = telebot.types.InlineKeyboardMarkup()
@@ -250,9 +375,12 @@ class NotificationService:
             try:
                 if evidence_path and os.path.exists(evidence_path):
                     with open(evidence_path, "rb") as photo:
-                        bot.send_photo(chat_id, photo, caption=caption, reply_markup=markup)
+                        sent = bot.send_photo(chat_id, photo, caption=caption, reply_markup=markup)
+                    is_photo = True
                 else:
-                    bot.send_message(chat_id, caption, reply_markup=markup)
+                    sent = bot.send_message(chat_id, caption, reply_markup=markup)
+                    is_photo = False
+                self._tg_register(incident_id, chat_id, getattr(sent, "message_id", None), is_photo, base)
                 bot.send_location(chat_id, incident["latitude"], incident["longitude"])
                 self._record(incident_id, "telegram", "sent", "configured demo chat", None)
                 return True
@@ -275,30 +403,41 @@ class NotificationService:
         self._record(incident_id, "call", "scheduled", "configured demo phone", f"escalation delay {delay:g}s")
         timer.start()
 
-    def _send_call_if_still_needed(self, incident_id: str, incident: dict) -> None:
+    def _send_call_if_still_needed(self, incident_id: str, incident: dict, source: str = "auto") -> None:
+        """source="auto": the escalation timer fired (no response). source="operator":
+        the Escalate-now button. The Telegram message gets a status line either way."""
         from api.services import incident_service_v2 as incident_service
+        auto = source == "auto"
+        who = "auto-call" if auto else "call"
+
+        def skipped(reason: str) -> None:
+            self._tg_note(incident_id, f"{who} skipped: {reason}")
+
         current = incident_service.get_incident(incident_id)
         if current is None or current.get("status") in ("false_positive", "confirmed"):
-            # "confirmed" == Acknowledge (fix pass item 14): stops the automatic call
-            # whether it was pressed in Telegram or on the dashboard.
+            # "confirmed" == Acknowledge: stops the automatic call whether it was
+            # pressed in Telegram or on the dashboard (the press already wrote its own line).
             self._record(incident_id, "call", "cancelled", "configured demo phone", "incident acknowledged, marked false positive or unavailable")
+            if current is not None:
+                self._tg_note(incident_id, f"{who} cancelled: incident already {'acknowledged' if current.get('status') == 'confirmed' else 'dismissed'}")
             return
         with self._lock:
             now = time.monotonic()
             while self._calls and now - self._calls[0] > 3600:
                 self._calls.popleft()
-            if len(self._calls) >= settings.MAX_CALLS_PER_HOUR:
-                self._record(incident_id, "call", "skipped", "configured demo phone", "MAX_CALLS_PER_HOUR reached")
-                return
+            capped = len(self._calls) >= settings.MAX_CALLS_PER_HOUR
+        if capped:
+            self._record(incident_id, "call", "skipped", "configured demo phone", "MAX_CALLS_PER_HOUR reached")
+            return skipped("MAX_CALLS_PER_HOUR reached")
         phone = settings.DEMO_PHONE_NUMBER
         gate = check_call_allowed(phone)
         if not gate.allowed:
             self._record(incident_id, "call", "blocked", "configured demo phone", gate.reason)
-            return
+            return skipped(gate.reason)
         api_key, agent_id = os.environ.get("OMNIDIM_API_KEY"), os.environ.get("OMNIDIM_AGENT_ID")
         if not api_key or not agent_id:
             self._record(incident_id, "call", "failed", "configured demo phone", "missing OMNIDIM_API_KEY or OMNIDIM_AGENT_ID")
-            return
+            return skipped("missing OMNIDIM_API_KEY or OMNIDIM_AGENT_ID")
         payload = {"agent_id": int(agent_id), "to_number": phone,
                    "call_context": {"alert_message": build_call_message(incident, current.get("dispatch_plan"))}}
         from_number_id = os.environ.get("OMNIDIM_FROM_NUMBER_ID")
@@ -311,27 +450,35 @@ class NotificationService:
             with self._lock:
                 self._calls.append(time.monotonic())
             self._record(incident_id, "call", "sent", "configured demo phone", None)
+            line = f"No response - auto-call placed at {self._stamp()}" if auto else f"Call placed at {self._stamp()}"
+            self._tg_note(incident_id, line, call=True)  # Acknowledge / False alarm stay available
         except (requests.RequestException, ValueError) as exc:
             self._record(incident_id, "call", "failed", "configured demo phone", type(exc).__name__)
+            skipped(f"call request failed ({type(exc).__name__})")
 
     def _start_polling(self) -> None:
+        """Callback poller for the lifetime of the API: restarts itself if the
+        polling loop ever dies, so button presses work at any time."""
         if self._poller is not None and self._poller.is_alive():
             return
         bot = self._get_bot()
         if bot is None:
             return
         if not self._handlers_registered:
-            @bot.callback_query_handler(func=lambda call: str(getattr(call, "data", "")).startswith("incident:"))
-            def _callback(call):
-                parts = str(call.data).split(":", 2)
-                success = len(parts) == 3 and self.handle_callback(parts[1], parts[2])
-                try:
-                    bot.answer_callback_query(call.id, "Recorded" if success else "Incident/action unavailable")
-                except Exception:
-                    pass
+            bot.callback_query_handler(func=lambda call: str(getattr(call, "data", "")).startswith("incident:"))(self._on_callback)
             self._handlers_registered = True
-        self._poller = threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=20),
-                                        name="telegram-callback-poller", daemon=True)
+
+        def run():
+            while not self._stop.is_set():
+                try:
+                    bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=20,
+                                         allowed_updates=["callback_query", "message"])
+                except Exception as exc:
+                    print(f"[Notification] telegram poller stopped ({type(exc).__name__}); restarting in 5 s")
+                if not self._stop.wait(5):
+                    continue
+
+        self._poller = threading.Thread(target=run, name="telegram-callback-poller", daemon=True)
         self._poller.start()
 
     @staticmethod

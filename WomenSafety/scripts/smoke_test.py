@@ -111,11 +111,12 @@ def smoke_telegram(timeout_s=120):
                         state["accepted"] = data.rsplit(":", 1)[-1]
                         stop.set()
                         try:
-                            text = f"SMOKE TEST: button press received -> {state['accepted']} at {time.strftime('%H:%M:%S')}"
+                            who = getattr(cq.from_user, "first_name", None) or "operator"
+                            text = f"SMOKE TEST: button press received -> {state['accepted']} from {who} at {time.strftime('%H:%M:%S')}"
                             if cq.message is not None and getattr(cq.message, "photo", None):
-                                bot.edit_message_caption(text, chat_id=chat_id, message_id=cq.message.message_id)
+                                bot.edit_message_caption(text, chat_id=chat_id, message_id=cq.message.message_id, reply_markup=telebot.types.InlineKeyboardMarkup())
                             elif cq.message is not None:
-                                bot.edit_message_text(text, chat_id=chat_id, message_id=cq.message.message_id)
+                                bot.edit_message_text(text, chat_id=chat_id, message_id=cq.message.message_id, reply_markup=telebot.types.InlineKeyboardMarkup())
                         except Exception as exc:
                             entry += f" [edit failed: {type(exc).__name__}]"
                 log.append(entry)
@@ -132,7 +133,8 @@ def smoke_telegram(timeout_s=120):
                "Press any button within 120 s to verify the callback path.")
     try:
         with open(PHOTO, "rb") as photo:
-            bot.send_photo(chat_id, photo, caption=caption, reply_markup=markup)
+            sent = bot.send_photo(chat_id, photo, caption=caption, reply_markup=markup)
+        state["msg_id"] = getattr(sent, "message_id", None)
         camera = get_camera("CAM-SAMPLE-001")
         bot.send_location(chat_id, camera.latitude, camera.longitude)
     except Exception as exc:
@@ -149,6 +151,14 @@ def smoke_telegram(timeout_s=120):
         report("telegram callback", True, f"button press received: {state['accepted']}")
     else:
         report("telegram callback", False, f"no accepted button press in {timeout_s} s; raw updates seen: {state['count']}")
+        # Leave the chat tidy: replace the caption and remove the now-dead buttons.
+        try:
+            if state["msg_id"]:
+                bot.edit_message_caption(f"SMOKE TEST: no button press within {timeout_s} s", chat_id=chat_id,
+                                         message_id=state["msg_id"], reply_markup=telebot.types.InlineKeyboardMarkup())
+                print("  message edited: no-press notice, buttons removed")
+        except Exception as exc:
+            print(f"  [edit failed] {type(exc).__name__}")
 
 
 def smoke_call_message():

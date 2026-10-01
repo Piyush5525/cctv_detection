@@ -1,3 +1,15 @@
+# Telegram message handling fixes (2026-10-01)
+
+Scope lock: no detection, threshold or dispatch changes.
+
+1. **Button presses edit the same message.** The alert keeps its original caption (category, camera, place, time, peak confidence, threshold, and now the nearest services by name and distance; previously it only said "fire: available") and a status line is appended with local time `HH:MM:SS UTC+05:30` and the presser's display name only (first/last name or username, never ids): `Acknowledged by <name> at ... - automatic call cancelled`, `Marked false alarm by <name> at ...`, `Escalate now pressed by <name> at ...`. Buttons that no longer apply are removed: after Acknowledge only False alarm remains; after False alarm none; after Escalate / auto-call: Acknowledge and False alarm remain, Escalate goes. Edit uses `edit_message_caption` for photo alerts and `edit_message_text` otherwise, keeps within Telegram's 1024-char caption limit, and rebuilds its state from the pressed message if the API was restarted.
+2. **Escalation timer line.** When the timer fires the message gets `No response - auto-call placed at HH:MM:SS UTC...` or `auto-call skipped: <reason>` (rate cap, safety-guard block, missing Omnidim credentials, request failure). Acknowledge and False alarm stay available after the call. An operator-triggered call writes `Call placed at ...` instead.
+3. **Poller for the lifetime of the API.** The callback poller now runs in a self-restarting loop (`allowed_updates=[callback_query, message]`), and `answerCallbackQuery` is sent first, then the message is edited. A press on an alert whose incident no longer exists is answered `This alert has expired`, and its buttons are removed. Unknown actions answer `Unknown action`.
+4. **Smoke test.** After the window ends with no press, `--telegram` edits the message to `SMOKE TEST: no button press within <n> s` and removes the buttons; an accepted press also removes the buttons and names the presser.
+5. **Tests** (`tests/test_telegram_handling.py`, all network mocked: fake bot, patched `requests.post`, patched SerpApi; 18 tests total pass): Acknowledge cancels the call, writes `operator acknowledged` + `call cancelled` to the timeline, and the dashboard endpoint shows status `confirmed`; False alarm sets `false_positive`, cancels the call, removes all buttons, dashboard shows it; Escalate now places the call immediately (well under the 0.4 s test delay) and the message shows the call line with Acknowledge/False alarm left; no press: call placed after the escalation delay and the message shows `No response - auto-call placed at`; auto-call skipped line; press on an expired alert answers `This alert has expired`.
+
+Not verified live: the real Telegram edit calls (only mocked here). Run `python scripts/smoke_test.py --telegram --yes` to see the smoke-test message edits on a real chat; a full-flow alert (ALERTS_ENABLED=true) will show the new captions and status lines.
+
 # Demo fix pass (2026-10-01)
 
 Scope lock: no training, no detector or threshold-logic changes. SPEED MODE:
