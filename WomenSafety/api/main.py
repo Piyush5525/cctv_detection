@@ -16,12 +16,15 @@ async def lifespan(app: FastAPI):
     db_v2.init_db()
     from api.services.notification_service import notification_service
     from api.services.camera_workers import camera_workers
+    from api.services.phone_location import location_manager
     notification_service.start(start_polling=True)
+    location_manager.start()  # no-op while LOCATION_MODE=fixed (the default)
     camera_workers.start()
     try:
         yield
     finally:
         camera_workers.stop()
+        location_manager.stop()
         notification_service.stop()
 
 

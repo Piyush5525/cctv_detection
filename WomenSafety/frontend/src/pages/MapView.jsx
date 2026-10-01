@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import Map, { Marker } from 'react-map-gl/mapbox'
+import Map, { Layer, Marker, Source } from 'react-map-gl/mapbox'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import toast from 'react-hot-toast'
 import api from '../utils/api'
@@ -16,6 +16,31 @@ const POLL_MS = 2000
 // "confirmed" only ever comes from the Acknowledge button (dashboard or Telegram).
 const STATUS_LABELS = { confirmed: 'Acknowledged', acknowledged: 'Acknowledged', false_positive: 'False positive', false_alarm: 'False alarm' }
 const statusLabel = (status) => STATUS_LABELS[status] || status
+
+// Location source badge. The backend only sends location_source for phone cameras and only when
+// LOCATION_MODE != fixed, so nothing is shown (and nothing changes) in the default mode.
+function locationBadge(source, accuracy, fixAge) {
+  if (source === 'device_gps') return `Device GPS ± ${Math.round(accuracy ?? 0)} m${fixAge != null ? ` · fix ${Math.round(fixAge)} s old` : ''}`
+  if (source === 'camera_registry') return 'Fixed placement'
+  return null
+}
+
+// Great-circle metres, and a polygon approximating an accuracy circle (display only).
+function metres(a, b) {
+  const R = 6371000, rad = (x) => (x * Math.PI) / 180
+  const dLat = rad(b.latitude - a.latitude), dLng = rad(b.longitude - a.longitude)
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.latitude)) * Math.cos(rad(b.latitude)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(h))
+}
+function circlePolygon(lng, lat, radiusM) {
+  const pts = []
+  for (let i = 0; i <= 64; i++) {
+    const t = (i / 64) * 2 * Math.PI
+    pts.push([lng + (radiusM * Math.cos(t)) / (111320 * Math.cos((lat * Math.PI) / 180)), lat + (radiusM * Math.sin(t)) / 110540])
+  }
+  return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [pts] }, properties: {} }
+}
+const CLOSE_CAMERA_M = 15
 const SLIDE_MS = 3000
 const PREFERSREDUCEDMOTION =
   typeof window !== 'undefined' &&
@@ -207,6 +232,9 @@ function DetailPanel({ incident, group, onClose, hot, onHot }) {
         {incident.status && incident.status !== 'new' && (
           <span className="honesty-badge">{statusLabel(incident.status)}</span>
         )}
+        {locationBadge(incident.location_source, incident.location_accuracy_m, incident.location_fix_age_s) && (
+          <span className="honesty-badge loc-badge">{locationBadge(incident.location_source, incident.location_accuracy_m, incident.location_fix_age_s)}</span>
+        )}
         {incident.source === 'test_replay' && (
           <span className="honesty-badge replay-badge">📹 Recorded footage replay</span>
         )}
@@ -365,6 +393,9 @@ function LiveCameraTile({ camera }) {
             <span className="live-fps">{camera.effective_fps} FPS</span>
           )}
         </div>
+        {locationBadge(camera.location_source, camera.location_accuracy_m, camera.location_fix_age_s) && (
+          <span className="honesty-badge loc-badge">{locationBadge(camera.location_source, camera.location_accuracy_m, camera.location_fix_age_s)}</span>
+        )}
       </div>
     </article>
   )
@@ -661,6 +692,27 @@ export default function MapView() {
     return () => clearTimeout(t)
   }, [])
 
+  // ── Display-only offset for cameras within 15 m of each other (stored coordinates never change) ──
+  const cameraOffsets = useMemo(() => {
+    const offsets = {}
+    const spread = [[-12, -8], [12, 8], [-12, 12], [12, -12]]
+    groups.forEach((g, i) => {
+      const near = groups.filter((o, j) => j !== i && metres(g, o) < CLOSE_CAMERA_M)
+      if (near.length) {
+        const cluster = [g, ...near].map((x) => x.camera_id).sort()
+        offsets[g.camera_id] = spread[cluster.indexOf(g.camera_id) % spread.length]
+      }
+    })
+    return offsets
+  }, [groups.map((g) => `${g.camera_id}:${g.latitude}:${g.longitude}`).join('|')])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // soft accuracy circle for the selected camera (device GPS only)
+  const selectedGroup = groups.find((g) => g.camera_id === selected?.camera_id)
+  const accuracyCircle = useMemo(
+    () => (selectedGroup?.location_source === 'device_gps' && selectedGroup.location_accuracy_m
+      ? circlePolygon(selectedGroup.longitude, selectedGroup.latitude, selectedGroup.location_accuracy_m) : null),
+    [selectedGroup?.location_source, selectedGroup?.location_accuracy_m, selectedGroup?.latitude, selectedGroup?.longitude])  // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Live cameras (show all, highlight phones) ──────────────────────
   const liveCameras = useMemo(
     () => cameraStatus.filter((c) => c.camera_type === 'phone'),
@@ -719,7 +771,7 @@ export default function MapView() {
                 const isHovered = hoveredId === g.camera_id
 
                 return (
-                  <Marker key={g.camera_id} longitude={g.longitude} latitude={g.latitude}>
+                  <Marker key={g.camera_id} longitude={g.longitude} latitude={g.latitude} offset={cameraOffsets[g.camera_id] || [0, 0]}>
                     <button
                       className={[
                         'camera-marker',
@@ -732,6 +784,7 @@ export default function MapView() {
                       onMouseLeave={() => setHoveredId(null)}
                       onClick={() => selectGroup(g)}
                       aria-label={`Camera ${idx + 1}: ${g.camera_name}, ${g.count} incidents`}
+                      title={cameraOffsets[g.camera_id] ? `Offset on screen only: cameras within ${CLOSE_CAMERA_M} m (stored coordinates unchanged)` : undefined}
                     >
                       <span className="marker-number">{idx + 1}</span>
                       {isNew && <span className="marker-pulse-ring" />}
@@ -743,6 +796,12 @@ export default function MapView() {
                 )
               })}
 
+              {accuracyCircle && (
+                <Source id="gps-accuracy" type="geojson" data={accuracyCircle}>
+                  <Layer id="gps-accuracy-fill" type="fill" paint={{ 'fill-color': '#7FE3D0', 'fill-opacity': 0.12 }} />
+                  <Layer id="gps-accuracy-line" type="line" paint={{ 'line-color': '#7FE3D0', 'line-opacity': 0.55, 'line-width': 1.5 }} />
+                </Source>
+              )}
               {/* Service markers + routes for the selected incident only */}
               <DispatchLayer incident={selected} hot={hotService} onHot={setHotService} />
             </Map>

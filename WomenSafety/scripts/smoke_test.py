@@ -169,7 +169,8 @@ def smoke_call_message():
     camera = get_camera("CAM-SAMPLE-001")
     plan = {"assignments": []}
     try:
-        cached = json.loads(settings.NEARBY_SERVICES_CACHE_PATH.read_text(encoding="utf-8")).get(camera.camera_id, {}).get("services", {})
+        from api.services.nearby_services import lookup_cached
+        cached = (lookup_cached(camera.latitude, camera.longitude) or {}).get("services", {})
         for cat, key in (("fire_station", "fire"), ("hospital", "hospital")):  # DISPATCH_RULES["fire"], primary first
             if cached.get(key):
                 plan["assignments"].append({"service_category": cat, "status": "available",

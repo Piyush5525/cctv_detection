@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from math import radians, sin, cos, sqrt, atan2
@@ -232,23 +233,89 @@ def _dedupe(services: list[dict]) -> list[dict]:
     return out
 
 
+CATEGORIES = tuple(CATEGORY_QUERIES)
+_inflight: dict[str, threading.Event] = {}
+_inflight_lock = threading.Lock()
+_cache_lock = threading.RLock()
+
+
+def cell_key(latitude: float, longitude: float) -> str:
+    """~100 m grid cell (0.001 deg of latitude is ~111 m, of longitude ~99 m at Jaipur's latitude), so small
+    GPS drift reuses the cache and a different place never reuses another place's results."""
+    return f"cell:{latitude:.3f},{longitude:.3f}"
+
+
+def api_calls_made() -> int:
+    return _api_call_count
+
+
+def _cache_with_migration() -> dict:
+    """Entries written before the grid change were keyed by camera id; move them to their cell using the
+    camera registry (no SerpApi calls). Unknown ids are dropped."""
+    cache = _load_cache()
+    legacy = [k for k in cache if not k.startswith("cell:")]
+    if not legacy:
+        return cache
+    from api.models.camera import get_camera
+    for key in legacy:
+        entry = cache.pop(key)
+        cam = get_camera(key)
+        if cam is not None and cam.latitude is not None:
+            cache.setdefault(cell_key(cam.latitude, cam.longitude), entry)
+    _save_cache(cache)
+    return cache
+
+
+def lookup_cached(latitude: float, longitude: float) -> Optional[dict]:
+    """Complete, fresh cache entry for this cell (all categories) or None. Never touches the network."""
+    with _cache_lock:
+        entry = _cache_with_migration().get(cell_key(latitude, longitude))
+    if entry and _cache_entry_fresh(entry) and all(c in entry.get("services", {}) for c in CATEGORIES):
+        return {"source": "cache", "cached_at": entry["cached_at"], "services": entry["services"], "excluded": entry.get("excluded")}
+    return None
+
+
 def get_nearby_services(camera_id: str, latitude: float, longitude: float, place_text: str,
                          force_refresh: bool = False) -> dict:
-    """Returns {category: [services...]} for hospital/police/fire,
-    nearest NEARBY_SERVICES_KEEP_TOP_N each, from cache if fresh (TTL,
-    default 30 days) unless force_refresh. Raises NearbyServicesError on
-    a real failure (never returns fabricated data as a fallback)."""
-    cache = _load_cache()
-    cached = cache.get(camera_id)
-    if cached and not force_refresh and _cache_entry_fresh(cached):
-        return {"source": "cache", "cached_at": cached["cached_at"], "services": cached["services"], "excluded": cached.get("excluded")}
+    """Returns {category: [services...]} for hospital/police/fire, nearest-first (phone preferred), keyed by
+    ~100 m grid cell. A fresh complete entry is a cache hit; otherwise only the missing categories are fetched
+    (SerpApi call cap applies). One lookup per cell at a time (prefetch and incident share it). Raises
+    NearbyServicesError on a real failure -- never fabricated data, never another cell's results."""
+    key = cell_key(latitude, longitude)
+    if not force_refresh:
+        hit = lookup_cached(latitude, longitude)
+        if hit:
+            return hit
+    with _inflight_lock:
+        waiting_on = _inflight.get(key)
+        if waiting_on is None:
+            _inflight[key] = threading.Event()
+    if waiting_on is not None:  # someone else is already looking this cell up
+        waiting_on.wait(timeout=60)
+        hit = lookup_cached(latitude, longitude)
+        if hit:
+            return hit
+        raise NearbyServicesError("lookup for this location failed or timed out")
+    try:
+        return _fetch_cell(key, latitude, longitude, place_text, force_refresh)
+    finally:
+        with _inflight_lock:
+            _inflight.pop(key).set()
 
+
+def _fetch_cell(key: str, latitude: float, longitude: float, place_text: str, force_refresh: bool) -> dict:
+    with _cache_lock:
+        cache = _cache_with_migration()
+    entry = cache.get(key) if not force_refresh else None
+    fresh = bool(entry and _cache_entry_fresh(entry))
+    result = dict(entry["services"]) if fresh else {}
+    excluded = list(entry.get("excluded") or []) if fresh else []
     city = _city_from_place_text(place_text)
-    result: dict[str, list[dict]] = {}
     errors: dict[str, str] = {}
-    excluded: list[dict] = []
 
     for category, query_word in CATEGORY_QUERIES.items():
+        if category in result:
+            continue
         query = f"{query_word} {city}".strip()
         try:
             raw_results = _query_serpapi(query, latitude, longitude)
@@ -263,15 +330,26 @@ def get_nearby_services(camera_id: str, latitude: float, longitude: float, place
             else:
                 kept_raw.append(r)
         extracted = [s for s in (_extract_service(r, category, latitude, longitude) for r in kept_raw) if s is not None]
-        extracted = rank_services(_dedupe(extracted))
-        result[category] = extracted[:settings.NEARBY_SERVICES_KEEP_TOP_N]
+        result[category] = rank_services(_dedupe(extracted))[:settings.NEARBY_SERVICES_KEEP_TOP_N]
 
     if not result and errors:
-        # Every category failed -- a real error, not an empty-but-valid result.
         raise NearbyServicesError(f"all categories failed: {errors}")
 
     cached_at = datetime.now(timezone.utc).isoformat()
-    cache[camera_id] = {"cached_at": cached_at, "services": result, "errors": errors or None, "excluded": excluded}
-    _save_cache(cache)
-
+    with _cache_lock:
+        cache = _cache_with_migration()
+        cache[key] = {"cached_at": cached_at, "services": result, "errors": errors or None, "excluded": excluded}
+        _save_cache(cache)
     return {"source": "live", "cached_at": cached_at, "services": result, "errors": errors or None, "excluded": excluded}
+
+
+def warm_async(latitude: float, longitude: float, place_text: str) -> None:
+    """Background prefetch for a position's cell (phone start-up, or the phone moved to a new cell). Respects the
+    SerpApi cap (a capped/failed lookup is simply a later cache miss) and never raises."""
+    def run():
+        try:
+            if lookup_cached(latitude, longitude) is None:
+                get_nearby_services("prefetch", latitude, longitude, place_text)
+        except Exception:
+            pass
+    threading.Thread(target=run, name="nearby-prefetch", daemon=True).start()

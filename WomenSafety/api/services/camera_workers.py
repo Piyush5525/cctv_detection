@@ -16,6 +16,7 @@ from api.services import incident_service_v2 as incidents
 from api.services.detector_interface import DetectorRegistry
 from api.services.event_capture import EventCapturePipeline
 from api.services.frame_sampler import RealtimeFrameGate
+from api.services.phone_location import location_fields, resolve_location
 
 
 def _weights(name: str):
@@ -105,7 +106,8 @@ class CameraWorker:
                 "camera_type": self.camera.camera_type, "location_basis": self.camera.location_basis,
                 "status": self.status, "last_frame_age_s": age,
                 "effective_fps": round(self.gate.effective_fps, 2), "frames_read": self.frames_read,
-                "latency_s": None if self.latency_s is None else round(self.latency_s, 3), "error": self.error}
+                "latency_s": None if self.latency_s is None else round(self.latency_s, 3), "error": self.error,
+                **location_fields(self.camera, resolve_location(self.camera))}
 
     def _incident_ready(self, camera_id, ev, evidence):
         # Replayed sample files are never labelled live (fix pass item 4).
@@ -117,8 +119,8 @@ class CameraWorker:
     def _read_loop(self):
         backoff = settings.CAMERA_RECONNECT_INITIAL_S
         while not self._stop.is_set():
-            if self.camera.location_error:  # unset/invalid env coordinates: no default, stay offline
-                self.status, self.error = "offline", f"location not configured: {self.camera.location_error}"
+            if resolve_location(self.camera) is None:  # no GPS fix (mode != fixed) and no valid .env coordinates: stay offline
+                self.status, self.error = "offline", f"location not configured: {self.camera.location_error or 'no acceptable GPS fix and no fixed coordinates'}"
                 self._stop.wait(backoff); backoff = min(backoff * 2, settings.CAMERA_RECONNECT_MAX_S); continue
             cap, kind, error = _open_capture(self.camera)
             if cap is None or not cap.isOpened():

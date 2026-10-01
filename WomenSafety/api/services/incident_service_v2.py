@@ -15,6 +15,7 @@ from typing import Optional
 
 from api import db
 from api.models.camera import get_camera
+from api.services.phone_location import location_fields, resolve_location
 from api.models.incident_v2 import (
     Incident, Detection, Evidence, BBox, Category, IncidentStatus,
     SourceKind, IncidentStatusUpdate, QuarantinedEvent, utcnow,
@@ -73,8 +74,8 @@ def handle_finished_event(camera_id: str, ev: ActiveEvent, evidence_raw: dict, s
     reason = None
     if cam is None:
         reason = f"unknown camera_id {camera_id!r} -- not in the camera registry"
-    elif cam.latitude is None or cam.longitude is None:
-        reason = "camera registry entry has no coordinates"
+    elif (loc := resolve_location(cam)) is None:  # snapshot: device GPS (phone, mode != fixed) else registry coordinates
+        reason = "camera has no location (no acceptable GPS fix and no fixed coordinates)"
     elif ev.event_start is None:
         reason = "event has no event_start"
     elif not evidence_raw.get("best_frame_path"):
@@ -109,9 +110,10 @@ def handle_finished_event(camera_id: str, ev: ActiveEvent, evidence_raw: dict, s
             camera_id=cam.camera_id,
             camera_name=cam.display_name,
             place_text=cam.place_text,
-            latitude=cam.latitude,
-            longitude=cam.longitude,
+            latitude=loc.lat,
+            longitude=loc.lon,
             location_precision="exact",
+            **location_fields(cam, loc),
             category=_category_from_class_name(ev.category),
             event_start=ev.event_start,
             event_end=ev.last_detection_at,

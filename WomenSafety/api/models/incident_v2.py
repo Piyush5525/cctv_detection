@@ -90,6 +90,10 @@ class Incident(BaseModel):
     latitude: float
     longitude: float
     location_precision: str = "exact"
+    # Set only for phone cameras when LOCATION_MODE != fixed ("device_gps" | "camera_registry"); else None.
+    location_source: Optional[str] = None
+    location_accuracy_m: Optional[float] = None
+    location_fix_age_s: Optional[float] = None
 
     category: Category
 

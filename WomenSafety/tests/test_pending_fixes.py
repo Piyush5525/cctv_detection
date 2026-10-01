@@ -81,7 +81,7 @@ class NearbyFilterTests(unittest.TestCase):
         self.assertIn("equipment/supplier", reasons[("fire", "SHRI SHYAM FIRE ENTERPRISES")])
         self.assertIn("equipment/supplier", reasons[("fire", "Fire Safety Dealer")])
         self.assertIn("not police", reasons[("police", "Cafe Police")])
-        cached = ns_mod._load_cache()["CAM-X"]
+        cached = ns_mod._load_cache()[ns_mod.cell_key(26.9, 75.79)]
         self.assertEqual(len(cached["excluded"]), len(out["excluded"]))  # reasons persisted
 
     def test_phone_number_ranks_higher_within_300m(self):

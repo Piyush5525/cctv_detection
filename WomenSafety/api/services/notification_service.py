@@ -49,6 +49,9 @@ def build_call_message(incident: dict, plan: Optional[dict]) -> str:
     return f"{prefix} {body}".strip()
 
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+
+_lookup_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='nearby-lookup')
 CAPTION_LIMIT = 1000  # Telegram's caption limit is 1024; keep a margin
 
 
@@ -329,8 +332,8 @@ class NotificationService:
             finally:
                 self._queue.task_done()
 
-    def _process(self, incident: dict) -> None:
-        incident_id = incident["incident_id"]
+    # ---- dispatch plan: from the incident's snapshot location ----
+    def _compute_plan(self, incident: dict) -> dict:
         category = incident["category"]
         try:
             lookup = get_nearby_services(incident["camera_id"], incident["latitude"], incident["longitude"], incident["place_text"])
@@ -338,14 +341,72 @@ class NotificationService:
             plan["nearby_services_source"] = lookup.get("source")
             if lookup.get("errors"):
                 plan["lookup_errors"] = lookup["errors"]
+            return plan
         except NearbyServicesError as exc:
             # A real lookup failure stays visible; no fake services or routes.
-            plan = {
+            return {
                 "category": category,
                 "required_services": list(required_services(category)),
                 "assignments": [], "lookup_error": str(exc),
                 "contact_policy": "display_only_never_auto_dial_discovered_numbers", "created_at": _now(),
             }
+
+    @staticmethod
+    def _use_deadline(incident: dict) -> bool:
+        from api.models.camera import get_camera
+        cam = get_camera(incident["camera_id"])
+        return settings.LOCATION_MODE != "fixed" and cam is not None and cam.camera_type == "phone"
+
+    def _plan_for(self, incident: dict) -> dict:
+        """Phone incidents (LOCATION_MODE != fixed): wait at most NEARBY_PLAN_WAIT_S for the services lookup (usually a
+        cache hit thanks to prefetch). If it is not ready the alert goes out anyway with the services shown as
+        unavailable, and the plan (and Telegram caption) is filled in when the lookup completes. Otherwise unchanged."""
+        if not self._use_deadline(incident):
+            return self._compute_plan(incident)
+        future = _lookup_pool.submit(self._compute_plan, incident)
+        try:
+            return future.result(timeout=settings.NEARBY_PLAN_WAIT_S)
+        except FutureTimeout:
+            category = incident["category"]
+            future.add_done_callback(lambda f: self._late_plan(incident, f))
+            return {
+                "category": category, "required_services": list(required_services(category)), "lookup_pending": True,
+                "assignments": [{"service_category": t, "role": "primary" if i == 0 else "secondary", "status": "unavailable",
+                                 "reason": "Lookup in progress"} for i, t in enumerate(required_services(category))],
+                "contact_policy": "display_only_never_auto_dial_discovered_numbers", "created_at": _now(),
+            }
+
+    def _late_plan(self, incident: dict, future) -> None:
+        try:
+            plan = future.result()
+        except Exception:
+            return
+        self._set_dispatch_plan(incident["incident_id"], plan)
+        self._record(incident["incident_id"], "dispatch", "plan_ready", "internal", "services lookup finished after the alert was sent")
+        with self._lock:
+            state = self._tg.get(incident["incident_id"])
+            if state is not None:
+                state["services"] = self._nearest_lines(plan)
+        self._tg_edit(incident["incident_id"])
+
+    @staticmethod
+    def _nearest_lines(plan: dict) -> list:
+        lines = []  # only the services this category needs (plan is built from DISPATCH_RULES)
+        for item in plan.get("assignments", []):
+            label = SERVICE_LABELS.get(item.get("service_category"), str(item.get("service_category")))
+            service = item.get("service") or {}
+            if item.get("status") == "available" and service.get("title"):
+                lines.append(f"{label}: {service['title']} ({service.get('distance_km', '?')} km)")
+            elif item.get("reason") == "Lookup in progress":
+                lines.append(f"{label}: lookup in progress")
+            else:
+                lines.append(f"{label}: none found nearby")
+        return lines
+
+    def _process(self, incident: dict) -> None:
+        incident_id = incident["incident_id"]
+        category = incident["category"]
+        plan = self._plan_for(incident)
         self._set_dispatch_plan(incident_id, plan)
 
         enabled = alerts_enabled_check()
@@ -392,14 +453,7 @@ class NotificationService:
         if bot is None:
             self._record(incident_id, "telegram", "failed", "configured demo chat", "missing TELEGRAM_BOT_TOKEN")
             return False
-        nearest = []  # only the services this category needs (plan is built from DISPATCH_RULES)
-        for item in plan.get("assignments", []):
-            label = SERVICE_LABELS.get(item.get("service_category"), str(item.get("service_category")))
-            service = item.get("service") or {}
-            if item.get("status") == "available" and service.get("title"):
-                nearest.append(f"{label}: {service['title']} ({service.get('distance_km', '?')} km)")
-            else:
-                nearest.append(f"{label}: none found nearby")
+        nearest = self._nearest_lines(plan)
         head = (f"Incident: {incident['category']}\nCamera: {incident['camera_name']}\nPlace: {incident['place_text']}\n"
                 f"Time: {incident.get('detected_at', _now())}\nPeak confidence: {incident['detection']['peak_confidence']:.2f}\n"
                 f"Threshold: {incident['detection']['threshold_applied']:.2f}")

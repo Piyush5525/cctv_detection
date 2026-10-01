@@ -17,7 +17,7 @@ load_dotenv(ENV_FILE, override=False)
 # dashboard's public token (frontend/.env VITE_MAPBOX_TOKEN, a browser-safe pk.*
 # token that is also valid for Directions) rather than silently losing road
 # routes. Value is never logged.
-if not os.environ.get("MAPBOX_TOKEN"):
+if "MAPBOX_TOKEN" not in os.environ:  # an explicit empty value (tests, offline runs) is respected
     from dotenv import dotenv_values
     _vite_token = dotenv_values(Path(__file__).parent.parent.parent / "frontend" / ".env").get("VITE_MAPBOX_TOKEN")
     if _vite_token:
@@ -190,6 +190,16 @@ class Settings(BaseSettings):
     ESCALATION_DELAY_S: float = 60.0
     DEMO_ESCALATION_DELAY_S: float = 20.0
     CALL_MIN_CONFIDENCE: float = 0.6  # fire at/above this confidence escalates to a call immediately, bypassing the delay
+    # --- Device GPS for demo phones (api/services/phone_location.py) ---
+    # "fixed" (DEFAULT): nothing GPS-related runs, behaviour/labels/incidents unchanged. Flip to "auto"
+    # yourself once scripts/check_phone_gps.py confirms a source. See docs/GPS_BRINGUP.md.
+    LOCATION_MODE: str = "fixed"          # fixed | auto | device
+    MAX_FIX_AGE_S: float = 60.0
+    MAX_ACCURACY_M: float = 50.0
+    SMOOTH_FIXES: int = 5
+    LOCATION_JUMP_M: float = 100.0
+    LOCATION_POLL_S: float = 3.0
+    NEARBY_PLAN_WAIT_S: float = 5.0       # max wait for a services lookup at incident time (phone, mode != fixed)
     DEMO_COOLDOWN_S: float = 15.0  # used instead of NOTIFICATION_COOLDOWN_S when DEMO_MODE=true (outbound only)
     NOTIFICATION_COOLDOWN_S: float = 120.0  # at most one alert per camera+category per this many seconds
     MAX_CALLS_PER_HOUR: int = 5

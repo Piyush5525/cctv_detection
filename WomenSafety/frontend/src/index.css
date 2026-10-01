@@ -1351,3 +1351,6 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .dispatch-row, .eta-chip, .dispatch-legend { animation: none; transition: none; }
 }
+
+.loc-badge { background: rgba(127, 227, 208, 0.12); color: #7FE3D0; border: 1px solid rgba(127, 227, 208, 0.35); }
+.detail-badges { padding-right: 44px; }

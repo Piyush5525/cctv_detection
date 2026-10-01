@@ -52,8 +52,8 @@ class DispatchBackendTests(unittest.TestCase):
 
     def test_nearby_services_uses_fresh_cache_without_network(self):
         cached_at = nearby_services.datetime.now(nearby_services.timezone.utc).isoformat()
-        settings.NEARBY_SERVICES_CACHE_PATH.write_text(json.dumps({"CAM-TEST": {
-            "cached_at": cached_at, "services": {"hospital": [SAMPLE_SERVICE]},
+        settings.NEARBY_SERVICES_CACHE_PATH.write_text(json.dumps({nearby_services.cell_key(26.91, 75.78): {
+            "cached_at": cached_at, "services": {"hospital": [SAMPLE_SERVICE], "police": [], "fire": []},
         }}), encoding="utf-8")
         with patch.object(nearby_services, "_query_serpapi", side_effect=AssertionError("network must not run")):
             result = nearby_services.get_nearby_services("CAM-TEST", 26.91, 75.78, "MI Road, Jaipur")

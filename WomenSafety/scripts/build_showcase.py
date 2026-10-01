@@ -54,12 +54,11 @@ def find_source(ids, explicit):
     raise SystemExit(f"ERROR: could not find all {len(ids)} ids in {[str(c) for c in candidates][:3]}...; pass --source-db")
 
 
-def cached_services(camera_id):
-    path = settings.NEARBY_SERVICES_CACHE_PATH
-    try:
-        return json.loads(path.read_text(encoding="utf-8")).get(camera_id, {}).get("services")
-    except Exception:
-        return None
+def cached_services(camera):
+    """Cached lookup for the camera's ~100 m grid cell (no network)."""
+    from api.services.nearby_services import lookup_cached
+    hit = lookup_cached(camera.latitude, camera.longitude)
+    return hit["services"] if hit else None
 
 
 def estimated_services(lat, lng):
@@ -95,7 +94,7 @@ def main():
                      "latitude": camera.latitude, "longitude": camera.longitude, "location_precision": "exact",
                      "source": "test_replay", "status": "new", "notifications": [], "reviewed_by": None,
                      "reviewed_at": None, "review_note": None, "notification_status": "not_implemented"})
-        services = cached_services(camera.camera_id)
+        services = cached_services(camera)
         origin = "cache" if services else "estimated"
         plan = build_dispatch_plan(data["category"], camera.latitude, camera.longitude,
                                    services or estimated_services(camera.latitude, camera.longitude))

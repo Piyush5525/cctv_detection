@@ -15,6 +15,7 @@ from typing import Optional
 from fastapi import APIRouter, Query
 
 from api.models.camera import get_camera
+from api.services.phone_location import location_fields, resolve_location
 from api.services import incident_service_v2 as svc
 
 router = APIRouter(prefix="/map", tags=["map"])
@@ -41,6 +42,7 @@ async def get_map_groups(
     for camera_id, members in by_camera.items():
         members.sort(key=lambda i: i["event_start"], reverse=True)
         cam = get_camera(camera_id)
+        loc = resolve_location(cam) if cam else None  # smoothed device position for phones when mode != fixed
         page = members[offset_per_group:offset_per_group + limit_per_group]
         groups.append({
             "camera_id": camera_id,
@@ -48,8 +50,9 @@ async def get_map_groups(
             "camera_type": cam.camera_type if cam else "cctv",
             "location_basis": cam.location_basis if cam else "simulated_placement",
             "place_text": cam.place_text if cam else members[0]["place_text"],
-            "latitude": cam.latitude if cam and cam.latitude is not None else members[0]["latitude"],
-            "longitude": cam.longitude if cam and cam.longitude is not None else members[0]["longitude"],
+            "latitude": loc.lat if loc else members[0]["latitude"],
+            "longitude": loc.lon if loc else members[0]["longitude"],
+            **(location_fields(cam, loc) if cam else {}),
             "count": len(members),
             "latest_event_time": members[0]["event_start"],
             "incidents": [
