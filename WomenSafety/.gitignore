@@ -44,3 +44,9 @@ Thumbs.db
 
 # Fix pass: moved-aside databases
 *.db.old*
+
+# Phone/CCTV test frames saved by scripts/check_camera.py
+data/camera_check_CAM-001.jpg
+
+# hand-made config backups (may contain LAN addresses)
+config/*.bak

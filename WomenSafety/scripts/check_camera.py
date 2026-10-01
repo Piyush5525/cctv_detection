@@ -2,14 +2,22 @@
 import sys, time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from api.models.camera import get_camera, resolve_stream_source, stream_reachable
 import cv2
-from api.models.camera import get_camera, resolve_stream_source
 
 def main():
     if len(sys.argv) != 2: raise SystemExit("usage: python scripts/check_camera.py <camera_id>")
     camera = get_camera(sys.argv[1])
     if camera is None: raise SystemExit("ERROR: unknown camera id")
-    source = resolve_stream_source(camera); started = time.monotonic(); cap = cv2.VideoCapture(source)
+    if camera.location_error:
+        print(f"WARNING: camera location not configured ({camera.location_error}); the API keeps this camera offline until it is fixed. Checking the stream anyway.")
+    try:
+        source = resolve_stream_source(camera)
+    except ValueError as exc:  # message names env vars only, never values
+        raise SystemExit(f"ERROR: {exc}")
+    if isinstance(source, str) and source.lower().startswith(("http://", "https://", "rtsp://")) and not stream_reachable(source):
+        raise SystemExit(f"ERROR: unreachable stream for {camera.camera_id}; check URL, phone app, and same Wi-Fi.")
+    started = time.monotonic(); cap = cv2.VideoCapture(source)
     if not cap.isOpened(): raise SystemExit(f"ERROR: unreachable stream for {camera.camera_id}; check URL, phone app, and same Wi-Fi.")
     times, frame = [], None
     for _ in range(20):

@@ -10,6 +10,7 @@ from pydantic_settings import BaseSettings
 # run mode (uvicorn, run_dashboard --mode api, tests, scripts) sees it.
 # override=False: a real shell/OS env var always wins over the file.
 ENV_FILE = Path(__file__).parent.parent.parent / ".env"
+
 load_dotenv(ENV_FILE, override=False)
 
 # Directions API: the backend reads MAPBOX_TOKEN. If it is not set, reuse the

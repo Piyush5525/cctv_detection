@@ -15,6 +15,8 @@ async def nearby_services(camera_id: str, force_refresh: bool = Query(False)):
     camera = get_camera(camera_id)
     if camera is None:
         raise HTTPException(status_code=404, detail="Camera not found")
+    if camera.latitude is None or camera.longitude is None:
+        raise HTTPException(status_code=503, detail=f"camera location unavailable: {camera.location_error}")
     try:
         return get_nearby_services(
             camera.camera_id, camera.latitude, camera.longitude, camera.place_text,

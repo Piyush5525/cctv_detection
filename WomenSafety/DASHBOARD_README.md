@@ -82,10 +82,7 @@ Create a `.env` file in the WomenSafety directory:
 # Camera settings
 CAMERA_SOURCE=0                    # Camera index or video file path
 CAMERA_ROTATE=90                   # 0, 90, -90, 180, 270
-CAMERA_ID=CAM-001                  # Camera identifier
-CAMERA_LOCATION=MI Road, Jaipur    # Location name
-CAMERA_LAT=26.9124                 # Latitude
-CAMERA_LNG=75.7873                 # Longitude
+CAMERA_ID=                         # legacy local loop only; CAM-001 is the phone camera (PHONE_CAM001_URL/LAT/LNG)
 
 # Detection toggles
 VIOLENCE_DETECTION=1

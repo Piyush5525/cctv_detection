@@ -10,7 +10,7 @@ from typing import Optional
 import cv2
 
 from api.core.config import settings
-from api.models.camera import all_cameras, get_camera, resolve_stream_source
+from api.models.camera import all_cameras, get_camera, resolve_stream_source, stream_reachable
 from api.models.incident_v2 import SourceKind
 from api.services import incident_service_v2 as incidents
 from api.services.detector_interface import DetectorRegistry
@@ -36,13 +36,15 @@ def _open_capture(camera):
     try:
         source = resolve_stream_source(camera)
     except Exception as exc:  # e.g. env: var unset
-        return None, "unresolved", f"source unresolved ({type(exc).__name__}); will retry"
+        return None, "unresolved", f"stream source unresolved: {exc}; will retry"
     source = source.strip() if isinstance(source, str) else source
     if isinstance(source, str) and source.isdigit():
         source = int(source)  # device index, e.g. webcam "0"
     if isinstance(source, int):
         return cv2.VideoCapture(source), "device", None
     if source.lower().startswith(_URL_PREFIXES):
+        if not stream_reachable(source, settings.CAMERA_OPEN_TIMEOUT_S):
+            return None, "stream", "stream unreachable"
         ms = int(settings.CAMERA_OPEN_TIMEOUT_S * 1000)
         try:
             cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, ms, cv2.CAP_PROP_READ_TIMEOUT_MSEC, ms])
@@ -115,6 +117,9 @@ class CameraWorker:
     def _read_loop(self):
         backoff = settings.CAMERA_RECONNECT_INITIAL_S
         while not self._stop.is_set():
+            if self.camera.location_error:  # unset/invalid env coordinates: no default, stay offline
+                self.status, self.error = "offline", f"location not configured: {self.camera.location_error}"
+                self._stop.wait(backoff); backoff = min(backoff * 2, settings.CAMERA_RECONNECT_MAX_S); continue
             cap, kind, error = _open_capture(self.camera)
             if cap is None or not cap.isOpened():
                 self.status, self.error = "offline", error or "stream unreachable"

@@ -255,9 +255,11 @@ def main(headless: bool = False):
     # a real evidence clip/best-frame, alongside (not instead of) the
     # existing Telegram/call alert + dashboard-API-push logic above,
     # which stays untouched (scope-locked).
-    live_camera_id = os.environ.get('CAMERA_ID', 'CAM-001')
+    # CAM-001 is the API-owned phone camera now (see api/services/camera_workers.py); this legacy
+    # local loop must not masquerade as it, so CAMERA_ID has no default any more.
+    live_camera_id = os.environ.get('CAMERA_ID', '')
     event_pipeline = None
-    if get_camera(live_camera_id) is not None:
+    if live_camera_id and get_camera(live_camera_id) is not None:
         def _on_incident_ready(cam_id, ev, evidence):
             svc_v2.handle_finished_event(cam_id, ev, evidence, source=SourceKind.LIVE)
 
@@ -353,20 +355,21 @@ def main(headless: bool = False):
         if not should_send_to_api(detection_type, track_id):
             return
         try:
-            camera_lat = os.environ.get('CAMERA_LAT')
-            camera_lng = os.environ.get('CAMERA_LNG')
-            if not camera_lat or not camera_lng:
-                print('[APIClient] CAMERA_LAT/CAMERA_LNG not set in environment -- '
+            # Location now comes from the camera registry (config/cameras.json, which may itself
+            # reference PHONE_CAM001_LAT/LNG env vars). CAMERA_LAT/CAMERA_LNG/CAMERA_LOCATION were removed.
+            legacy_cam = get_camera(os.environ.get('CAMERA_ID', ''))
+            if legacy_cam is None or legacy_cam.latitude is None or legacy_cam.longitude is None:
+                print('[APIClient] CAMERA_ID is not a registered camera with a resolved location -- '
                       'refusing to send incident with an unknown location (no dummy coordinate fallback).')
                 return
             incident = create_incident_from_detection(
                 frame=frame,
                 detection_result={'confidence': confidence, **(detection_data or {})},
                 detection_type=detection_type,
-                camera_id=os.environ.get('CAMERA_ID', 'CAM-001'),
-                location_name=os.environ.get('CAMERA_LOCATION', 'MI Road, Jaipur'),
-                latitude=float(camera_lat),
-                longitude=float(camera_lng),
+                camera_id=legacy_cam.camera_id,
+                location_name=legacy_cam.place_text,
+                latitude=legacy_cam.latitude,
+                longitude=legacy_cam.longitude,
             )
             if incident:
                 api_client.submit_incident(incident)
@@ -433,7 +436,7 @@ def main(headless: bool = False):
             # buffer is correctly never populated during the demo.
             if legacy_enabled:
                 try:
-                    evidence_service.add_frame(os.environ.get('CAMERA_ID', 'CAM-001'), frame, datetime.utcnow())
+                    evidence_service.add_frame(os.environ.get('CAMERA_ID') or 'LOCAL', frame, datetime.utcnow())
                 except Exception:
                     pass
 

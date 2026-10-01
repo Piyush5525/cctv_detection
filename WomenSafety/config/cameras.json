@@ -2,16 +2,16 @@
   "cameras": [
     {
       "camera_id": "CAM-001",
-      "name": "Default live camera (main.py CAMERA_ID default)",
-      "place_text": "Unconfigured -- set CAMERA_ID/CAMERA_PLACE env vars for a real deployment",
-      "latitude": 26.9124,
-      "longitude": 75.7873,
-      "stream_source": "0",
-      "camera_type": "cctv",
-      "location_basis": "simulated_placement",
+      "name": "CAM 001",
+      "place_text": "Demo phone installation",
+      "latitude": "env:PHONE_CAM001_LAT",
+      "longitude": "env:PHONE_CAM001_LNG",
+      "stream_source": "env:PHONE_CAM001_URL",
+      "camera_type": "phone",
+      "location_basis": "real_installation",
       "enabled": true,
-      "sample": true,
-      "field_of_view_note": "Registered only because main.py/api_client.py/detect.py hardcode 'CAM-001' as their fallback camera_id default -- this is a placeholder registration, not a real installed camera. A real deployment must set CAMERA_ID to a properly registered camera_id."
+      "sample": false,
+      "field_of_view_note": "Demo phone camera. Stream URL and coordinates come from PHONE_CAM001_URL / PHONE_CAM001_LAT / PHONE_CAM001_LNG in .env (optional PHONE_CAM001_USER / PHONE_CAM001_PASSWORD for an app login); nothing sensitive is stored in this file."
     },
     {
       "camera_id": "CAM-SAMPLE-001",
@@ -64,19 +64,6 @@
       "enabled": true,
       "sample": true,
       "field_of_view_note": "Simulated placement used only to spread showcase incidents across the map. Replays data/crash.mp4 if sample workers are enabled."
-    },
-    {
-      "camera_id": "PHONE-DEMO-PHONE-CAMERA-ENTRANCE",
-      "name": "Demo phone camera - Entrance",
-      "place_text": "Demo phone installation",
-      "latitude": 26.9124,
-      "longitude": 75.7873,
-      "stream_source": "http://10.172.5.41:8080/video",
-      "camera_type": "phone",
-      "location_basis": "real_installation",
-      "enabled": true,
-      "sample": false,
-      "field_of_view_note": "Demo phone camera; fixed coordinates entered by operator."
     }
   ]
 }

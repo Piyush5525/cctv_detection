@@ -43,6 +43,8 @@ async def detect_media(
                    f"This dev/test endpoint requires a real registered camera_id -- it no longer "
                    f"accepts a location from the request.",
         )
+    if cam.latitude is None or cam.longitude is None:
+        raise HTTPException(status_code=503, detail=f"camera location unavailable: {cam.location_error}")
     location_name = cam.place_text
     latitude = cam.latitude
     longitude = cam.longitude

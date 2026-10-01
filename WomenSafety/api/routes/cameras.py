@@ -20,8 +20,7 @@ async def list_cameras():
     """Registered cameras (for the demo trigger picker); no stream sources."""
     from api.models.camera import all_cameras
     return {"cameras": [{"camera_id": c.camera_id, "name": c.display_name, "camera_type": c.camera_type,
-                         "location_basis": c.location_basis, "place_text": c.place_text,
-                         "latitude": c.latitude, "longitude": c.longitude} for c in sorted((c for c in all_cameras() if c.enabled), key=lambda c: (c.camera_id == "CAM-001", c.camera_id))]}
+                         "location_basis": c.location_basis, "place_text": c.place_text} for c in sorted((c for c in all_cameras() if c.enabled), key=lambda c: (c.camera_id == "CAM-001", c.camera_id))]}
 
 
 @router.get("/status")

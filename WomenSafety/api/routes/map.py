@@ -48,8 +48,8 @@ async def get_map_groups(
             "camera_type": cam.camera_type if cam else "cctv",
             "location_basis": cam.location_basis if cam else "simulated_placement",
             "place_text": cam.place_text if cam else members[0]["place_text"],
-            "latitude": cam.latitude if cam else members[0]["latitude"],
-            "longitude": cam.longitude if cam else members[0]["longitude"],
+            "latitude": cam.latitude if cam and cam.latitude is not None else members[0]["latitude"],
+            "longitude": cam.longitude if cam and cam.longitude is not None else members[0]["longitude"],
             "count": len(members),
             "latest_event_time": members[0]["event_start"],
             "incidents": [
