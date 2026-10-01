@@ -51,6 +51,19 @@
       "enabled": true,
       "sample": true,
       "field_of_view_note": "Sample replays testing/snatch.mp4 for testing. No dedicated normal-traffic-only clip exists in this repo -- see CHANGELOG.md open questions."
+    },
+    {
+      "camera_id": "CAM-SAMPLE-004",
+      "name": "Raja Park Crossing (sample)",
+      "place_text": "Raja Park, Jaipur",
+      "latitude": 26.8985,
+      "longitude": 75.826,
+      "stream_source": "data/crash.mp4",
+      "camera_type": "cctv",
+      "location_basis": "simulated_placement",
+      "enabled": true,
+      "sample": true,
+      "field_of_view_note": "Simulated placement used only to spread showcase incidents across the map. Replays data/crash.mp4 if sample workers are enabled."
     }
   ]
 }

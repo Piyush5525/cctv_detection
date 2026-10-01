@@ -76,6 +76,7 @@ class Evidence(BaseModel):
     fps: float
     sha256_clip: Optional[str] = None
     sha256_frame: str
+    note: Optional[str] = None  # e.g. "synthetic demo trigger" (fix pass item 9)
 
 
 class Incident(BaseModel):

@@ -12,6 +12,16 @@ from pydantic_settings import BaseSettings
 ENV_FILE = Path(__file__).parent.parent.parent / ".env"
 load_dotenv(ENV_FILE, override=False)
 
+# Directions API: the backend reads MAPBOX_TOKEN. If it is not set, reuse the
+# dashboard's public token (frontend/.env VITE_MAPBOX_TOKEN, a browser-safe pk.*
+# token that is also valid for Directions) rather than silently losing road
+# routes. Value is never logged.
+if not os.environ.get("MAPBOX_TOKEN"):
+    from dotenv import dotenv_values
+    _vite_token = dotenv_values(Path(__file__).parent.parent.parent / "frontend" / ".env").get("VITE_MAPBOX_TOKEN")
+    if _vite_token:
+        os.environ["MAPBOX_TOKEN"] = _vite_token
+
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Incident Command Dashboard"

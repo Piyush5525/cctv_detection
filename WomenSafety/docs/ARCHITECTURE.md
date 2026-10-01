@@ -29,7 +29,7 @@ flowchart TB
 
     subgraph Dispatch["📨 Dispatch Backend"]
         SQLite --> NQ["Notification queue<br/>bounded, async"]
-        NQ --> Telegram["Telegram alert<br/>photo + location pin<br/>Confirm / False alarm"]
+        NQ --> Telegram["Telegram alert<br/>photo + location pin<br/>Acknowledge / False alarm"]
         NQ --> Escalation["Escalation timer<br/>demo: 20s → voice call"]
         NQ --> SerpApi["SerpApi lookup<br/>nearest hospital/police/fire"]
         SerpApi --> Mapbox["Mapbox Directions<br/>route polyline + ETA"]
@@ -79,7 +79,7 @@ WomenSafety/
 │   ├── routes/
 │   │   ├── cameras.py          # Status, live MJPEG, demo trigger
 │   │   ├── map.py              # /map/groups (camera-grouped incidents)
-│   │   ├── incidents_v2.py     # CRUD + WebSocket push
+│   │   ├── incidents_v2.py     # incident list/detail/status + WebSocket push (polling fallback)
 │   │   ├── evidence.py         # File serving with HTTP Range
 │   │   └── nearby_services.py  # SerpApi lookup endpoint
 │   └── services/

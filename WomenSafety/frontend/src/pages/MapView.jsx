@@ -405,18 +405,41 @@ function DemoControls({ groups, onRefresh }) {
   const [triggerLoading, setTriggerLoading] = useState(false)
   const [triggerCategory, setTriggerCategory] = useState('fire')
 
+  const [cameras, setCameras] = useState([])
+  const [cameraId, setCameraId] = useState('')
+  useEffect(() => {
+    api.get('/cameras').then(({ data }) => {
+      setCameras(data.cameras || [])
+      setCameraId((cur) => cur || data.cameras?.[0]?.camera_id || '')
+    }).catch(() => {})
+  }, [])
+
   const handleTrigger = async () => {
-    const cam = groups[0]
+    const cam = cameras.find((c) => c.camera_id === cameraId)
     if (!cam) return toast.error('No cameras available')
     setTriggerLoading(true)
     try {
       await api.post('/demo/trigger', { camera_id: cam.camera_id, category: triggerCategory })
-      toast.success(`Test ${triggerCategory} incident triggered on ${cam.camera_name}`)
+      toast.success(`Test ${triggerCategory} incident triggered on ${cam.name}`)
       onRefresh()
     } catch (err) {
       toast.error(`Trigger failed: ${err.response?.data?.detail || err.message}`)
     } finally {
       setTriggerLoading(false)
+    }
+  }
+
+  const [busy, setBusy] = useState(false)
+  const runDemoAction = async (path, okMessage) => {
+    setBusy(true)
+    try {
+      const { data } = await api.post(path)
+      toast.success(`${okMessage} (previous DB backed up: ${data.backup})`)
+      onRefresh()
+    } catch (err) {
+      toast.error(err.response?.data?.detail || err.message)
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -427,13 +450,21 @@ function DemoControls({ groups, onRefresh }) {
         <span className="demo-controls-hint">Ctrl+Shift+D to toggle</span>
       </div>
       <div className="demo-controls-buttons">
-        <button className="demo-btn" disabled title="Requires demo/showcase.db with 5 verified incidents">
+        <button className="demo-btn" disabled={busy} onClick={() => runDemoAction('/demo/showcase', 'Showcase loaded')}
+                title="Replace current incidents with demo/showcase.db (current DB is backed up first)">
           📦 Load showcase
+        </button>
+        <button className="demo-btn" disabled={busy} onClick={() => runDemoAction('/demo/reset', 'Demo reset to 0 incidents')}
+                title="Clear all incidents (current DB is backed up first)">
+          ♻️ Reset demo
         </button>
         <button className="demo-btn" onClick={onRefresh}>
           🔄 Reset view
         </button>
         <div className="demo-trigger-row">
+          <select className="demo-select" value={cameraId} onChange={(e) => setCameraId(e.target.value)} aria-label="Trigger camera">
+            {cameras.map((c) => <option key={c.camera_id} value={c.camera_id}>{c.name}</option>)}
+          </select>
           <select
             className="demo-select"
             value={triggerCategory}

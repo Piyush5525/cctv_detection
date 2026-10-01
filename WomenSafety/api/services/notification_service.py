@@ -93,6 +93,15 @@ class NotificationService:
             self._last_by_key[key] = now
             return False
 
+    def reset_state(self) -> None:
+        """Demo reset: drop cooldown stamps, call-rate history and pending timers."""
+        with self._lock:
+            for timer in self._call_timers.values():
+                timer.cancel()
+            self._call_timers.clear()
+            self._last_by_key.clear()
+            self._calls.clear()
+
     def handle_callback(self, incident_id: str, action: str) -> bool:
         """Apply an operator decision from a signed-in bot callback.
 

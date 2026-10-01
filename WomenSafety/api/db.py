@@ -187,3 +187,24 @@ def list_quarantine() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute("SELECT data FROM quarantine ORDER BY quarantined_at DESC").fetchall()
         return [json.loads(r["data"]) for r in rows]
+
+
+def clear_all() -> None:
+    """Delete every incident and quarantine row (demo reset). Evidence files
+    on disk are left alone."""
+    with _write() as conn:
+        conn.execute("DELETE FROM incidents")
+        conn.execute("DELETE FROM quarantine")
+
+
+def backup_to(dest: Path) -> int:
+    """Consistent copy of the live DB via the sqlite backup API; returns the
+    incident row count of the copy."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with _connect() as src:
+        out = sqlite3.connect(str(dest))
+        try:
+            src.backup(out)
+            return out.execute("SELECT COUNT(*) FROM incidents").fetchone()[0]
+        finally:
+            out.close()

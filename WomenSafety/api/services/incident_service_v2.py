@@ -64,7 +64,7 @@ def _category_from_class_name(name: str) -> Category:
     return mapping.get(name.lower(), Category.OTHER)
 
 
-def handle_finished_event(camera_id: str, ev: ActiveEvent, evidence_raw: dict, source: SourceKind = SourceKind.LIVE) -> Optional[Incident]:
+def handle_finished_event(camera_id: str, ev: ActiveEvent, evidence_raw: dict, source: SourceKind = SourceKind.LIVE, evidence_note: Optional[str] = None) -> Optional[Incident]:
     """Synchronous entry point called from the event-capture encoder
     thread (not the asyncio loop). Validates, persists, and schedules
     the async WebSocket notification. Returns the created Incident, or
@@ -141,6 +141,7 @@ def handle_finished_event(camera_id: str, ev: ActiveEvent, evidence_raw: dict, s
                 fps=evidence_raw["fps"],
                 sha256_clip=evidence_raw.get("sha256_clip"),
                 sha256_frame=evidence_raw["sha256_frame"],
+                note=evidence_note,
             ),
             source=source,
         )

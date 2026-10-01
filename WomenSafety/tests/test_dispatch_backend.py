@@ -126,6 +126,19 @@ class DispatchBackendTests(unittest.TestCase):
         self.assertEqual(out["evidence"]["clip_path"], "CAM/2026-10-01/id/clip.mp4")
         self.assertNotIn(":", out["list"][0])
 
+    def test_open_capture_handles_digit_index_and_unresolved_env(self):
+        from api.models.camera import Camera
+        from api.services import camera_workers
+        def cam(src): return Camera(camera_id="C", name="n", place_text="p", latitude=26.9, longitude=75.8, stream_source=src, camera_type="phone")
+        with patch.object(camera_workers.cv2, "VideoCapture") as vc:
+            camera_workers._open_capture(cam("0"))
+            vc.assert_called_once_with(0)  # digit string => int device index
+        os.environ.pop("AUDIT_UNSET_URL", None)
+        cap, kind, error = camera_workers._open_capture(cam("env:AUDIT_UNSET_URL"))
+        self.assertIsNone(cap)
+        self.assertEqual(kind, "unresolved")
+        self.assertIn("will retry", error)
+
     def test_demo_routes_need_token(self):
         from fastapi.testclient import TestClient
         from api.main import app
