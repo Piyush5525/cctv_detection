@@ -93,20 +93,28 @@ class NearbyFilterTests(unittest.TestCase):
 
 
 class CallTextTests(unittest.TestCase):
-    PLAN = {"assignments": [{"service_category": "fire", "status": "available", "service": {"title": "Fire Stn", "distance_km": 1.6}},
-                            {"service_category": "hospital", "status": "available", "service": {"title": "SR Kalla Hospital", "distance_km": 0.98}}]}
-    INCIDENT = {"category": "fire", "camera_name": "Demo phone camera - Entrance", "place_text": "MI Road, Jaipur"}
+    PLAN = {"assignments": [{"service_category": "fire_station", "role": "primary", "status": "available", "service": {"title": "Fire Stn", "distance_km": 1.6}},
+                            {"service_category": "hospital", "role": "secondary", "status": "available", "service": {"title": "SR Kalla Hospital", "distance_km": 0.98}}]}
+    CRASH_PLAN = {"assignments": [{"service_category": "hospital", "role": "primary", "status": "available", "service": {"title": "SR Kalla Hospital", "distance_km": 0.98}},
+                                  {"service_category": "police", "role": "secondary", "status": "unavailable"}]}
+    INCIDENT = {"category": "fire", "camera_name": "Demo phone camera - CAM 001", "place_text": "MI Road, Jaipur"}
 
-    def test_short_text_with_prefix_in_demo_mode(self):
+    def test_fire_names_the_fire_station_with_prefix_in_demo_mode(self):
         settings.DEMO_MODE = True
         self.assertEqual(build_call_message(self.INCIDENT, self.PLAN),
-                         "This is a test call for the Room 118 demo. Fire detected at MI Road, Jaipur. Nearest hospital: SR Kalla Hospital, 0.98 kilometres.")
+                         "This is a test call for the Room 118 demo. Fire detected at MI Road, Jaipur. Nearest fire station: Fire Stn, 1.6 kilometres.")
 
-    def test_no_hospital_and_no_prefix_outside_demo(self):
+    def test_crash_names_the_hospital_never_a_fire_station(self):
+        settings.DEMO_MODE = True
+        text = build_call_message({**self.INCIDENT, "category": "road_accident"}, self.CRASH_PLAN)
+        self.assertEqual(text, "This is a test call for the Room 118 demo. Crash detected at MI Road, Jaipur. Nearest hospital: SR Kalla Hospital, 0.98 kilometres.")
+        self.assertNotIn("fire", text.lower())
+
+    def test_primary_unavailable_and_no_prefix_outside_demo(self):
         settings.DEMO_MODE = False
         try:
-            text = build_call_message({**self.INCIDENT, "category": "road_accident"}, {"assignments": []})
-            self.assertEqual(text, "Road accident detected at MI Road, Jaipur. Nearest hospital: unavailable.")
+            text = build_call_message({**self.INCIDENT, "category": "snatching"}, {"assignments": []})
+            self.assertEqual(text, "Snatching detected at MI Road, Jaipur. Nearest police station: unavailable.")
         finally:
             settings.DEMO_MODE = True
 

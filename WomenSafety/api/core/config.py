@@ -206,6 +206,32 @@ class Settings(BaseSettings):
         extra = "allow"
 
 
+
+# --- Dispatch rules (single source of truth) --------------------------------
+# Which responders each incident category needs, PRIMARY FIRST (the first entry
+# is the primary service, the rest are secondary). The backend dispatch_plan,
+# the dashboard (card + map layer), the Telegram caption and the call text all
+# read this table; the UI gets the already-filtered plan, it hard-codes nothing.
+# Service types: "hospital", "police", "fire_station". Categories not listed
+# (women_safety, any future one) use "other".
+DISPATCH_RULES: dict[str, tuple[str, ...]] = {
+    "fire": ("fire_station", "hospital"),
+    "road_accident": ("hospital", "police"),
+    "crash": ("hospital", "police"),
+    "assault": ("police",),
+    "snatching": ("police",),
+    "fall": ("hospital",),
+    "other": ("police",),
+}
+# Rule type -> key used by the SerpApi lookup / cache ("fire" there).
+SERVICE_LOOKUP_KEY = {"hospital": "hospital", "police": "police", "fire_station": "fire"}
+SERVICE_LABELS = {"hospital": "hospital", "police": "police station", "fire_station": "fire station"}
+
+
+def required_services(category: str) -> tuple[str, ...]:
+    return DISPATCH_RULES.get(category) or DISPATCH_RULES["other"]
+
+
 settings = Settings()
 
 settings.EVIDENCE_CLIPS_DIR.mkdir(parents=True, exist_ok=True)

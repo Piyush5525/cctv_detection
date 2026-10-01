@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from api.core.config import settings
+from api.services.dispatch_routing import conform_plan
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 
@@ -37,6 +38,8 @@ def public_view(obj):
     prefixes = _prefixes()
 
     def walk(x):
+        if isinstance(x, dict) and x.get("dispatch_plan") and x.get("category"):
+            x = {**x, "dispatch_plan": conform_plan(x["category"], x["dispatch_plan"])}
         if isinstance(x, str):
             return _scrub_str(x, prefixes)
         if isinstance(x, list):

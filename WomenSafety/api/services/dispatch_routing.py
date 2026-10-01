@@ -14,23 +14,15 @@ from typing import Optional
 
 import requests
 
-from api.core.config import settings
+from api.core.config import DISPATCH_RULES, SERVICE_LABELS, SERVICE_LOOKUP_KEY, required_services, settings
 from api.services.nearby_services import _haversine_km
 
 MAPBOX_DIRECTIONS_URL = "https://api.mapbox.com/directions/v5/mapbox/driving"
 FALLBACK_SPEED_KMH = 30.0
 
-# Required responders are intentionally explicit and reviewable.  The order
-# is the operator-facing priority, not an instruction to contact a service.
-REQUIRED_SERVICES = {
-    "road_accident": ("hospital", "police", "fire"),
-    "fire": ("fire", "hospital", "police"),
-    "assault": ("police", "hospital"),
-    "snatching": ("police",),
-    "fall": ("hospital",),
-    "women_safety": ("police", "hospital"),
-    "other": ("police", "hospital"),
-}
+# Required responders per category now live in api/core/config.py (DISPATCH_RULES),
+# primary first. Kept as an alias for older imports.
+REQUIRED_SERVICES = DISPATCH_RULES
 
 
 def _load_cache() -> dict:
@@ -109,21 +101,36 @@ def route_to_service(origin_lat: float, origin_lng: float, service: dict) -> dic
         return fallback
 
 
+MAX_ALTERNATIVES = 2
+
+
+def _brief(service: dict) -> dict:
+    return {k: service.get(k) for k in ("title", "phone", "address", "distance_km", "gps_coordinates") if k in service}
+
+
 def build_dispatch_plan(category: str, latitude: float, longitude: float, services: dict) -> dict:
-    """Select the nearest result for each required category and add route data."""
-    required = list(REQUIRED_SERVICES.get(category, REQUIRED_SERVICES["other"]))
+    """One assignment per service type required for `category` (DISPATCH_RULES), primary
+    first. A missing type is reported as unavailable; it is NEVER replaced by another type.
+    The first candidate is the nearest/best-ranked one and gets a route; up to two more
+    are kept as `alternatives` (markers only). Nothing is fabricated: no lookup result,
+    no assignment."""
+    required = list(required_services(category))
     assignments = []
-    for service_category in required:
-        candidates = (services or {}).get(service_category, [])
+    for index, service_type in enumerate(required):
+        role = "primary" if index == 0 else "secondary"
+        candidates = (services or {}).get(SERVICE_LOOKUP_KEY[service_type], [])
         if not candidates:
-            assignments.append({"service_category": service_category, "status": "unavailable", "reason": "no lookup result"})
+            assignments.append({"service_category": service_type, "role": role, "status": "unavailable",
+                                "reason": f"No {SERVICE_LABELS[service_type]} found nearby"})
             continue
-        chosen = min(candidates, key=lambda item: item.get("distance_km", float("inf")))
+        chosen = candidates[0]  # lookup order is already nearest-first with the phone-number preference applied
         assignments.append({
-            "service_category": service_category,
+            "service_category": service_type,
+            "role": role,
             "status": "available",
             "service": chosen,
             "route": route_to_service(latitude, longitude, chosen),
+            "alternatives": [_brief(c) for c in candidates[1:1 + MAX_ALTERNATIVES]],
         })
     return {
         "category": category,
@@ -132,3 +139,24 @@ def build_dispatch_plan(category: str, latitude: float, longitude: float, servic
         "contact_policy": "display_only_never_auto_dial_discovered_numbers",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def conform_plan(category: str, plan: dict) -> dict:
+    """Plans stored before the rules table existed (or built by hand) are brought in line
+    with DISPATCH_RULES when they leave the API: old "fire" -> "fire_station", types the
+    category does not need are dropped, roles set, and a missing required type is shown
+    as unavailable. Plans without assignments (lookup error / pending) pass through."""
+    if not plan or not plan.get("assignments"):
+        return plan
+    required = list(required_services(category))
+    by_type = {}
+    for item in plan["assignments"]:
+        key = "fire_station" if item.get("service_category") == "fire" else item.get("service_category")
+        by_type.setdefault(key, {**item, "service_category": key})
+    assignments = []
+    for index, service_type in enumerate(required):
+        role = "primary" if index == 0 else "secondary"
+        item = by_type.get(service_type) or {"service_category": service_type, "status": "unavailable",
+                                              "reason": f"No {SERVICE_LABELS[service_type]} found nearby"}
+        assignments.append({**item, "role": role})
+    return {**plan, "required_services": required, "assignments": assignments}

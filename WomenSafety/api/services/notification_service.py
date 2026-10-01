@@ -17,30 +17,33 @@ from typing import Optional
 import requests
 
 from api.core.config import settings
-from api.services.dispatch_routing import REQUIRED_SERVICES, build_dispatch_plan
+from api.core.config import SERVICE_LABELS, required_services
+from api.services.dispatch_routing import build_dispatch_plan
 from api.services.nearby_services import NearbyServicesError, get_nearby_services
 from api.services.safety_guard import alerts_enabled_check, check_call_allowed, check_telegram_allowed
 
 CALL_DISPATCH_URL = "https://omnidim.io/api/v1/calls/dispatch"
 
 
+CATEGORY_SPOKEN = {"road_accident": "Crash", "crash": "Crash"}
+
+
 def build_call_message(incident: dict, plan: Optional[dict]) -> str:
-    """Text the Omnidim agent speaks ([alert_message]): demo prefix (DEMO_MODE), the
-    category, the place, and the single nearest hospital with its distance, e.g.
-    "Fire detected at MI Road, Jaipur. Nearest hospital: SR Kalla Hospital, 0.98 kilometres."
-    Names and distances only, never discovered phone numbers."""
-    category = str(incident.get("category", "incident")).replace("_", " ").capitalize()
+    """Text the Omnidim agent speaks ([alert_message]): demo prefix (DEMO_MODE), the category,
+    the place, and the PRIMARY service for that category (DISPATCH_RULES), e.g.
+    "Fire detected at MI Road, Jaipur. Nearest fire station: Rajasthan Agnishaman Seva, 1.61 kilometres."
+    or "Crash detected at ... Nearest hospital: ...". Names and distances only, never phone numbers."""
+    raw_category = str(incident.get("category", "incident"))
+    category = CATEGORY_SPOKEN.get(raw_category) or raw_category.replace("_", " ").capitalize()
     place = incident.get("place_text") or incident.get("camera_name") or "unknown location"
-    hospital = None
-    for item in (plan or {}).get("assignments", []):
-        service = item.get("service") or {}
-        if item.get("service_category") == "hospital" and item.get("status") == "available" and service.get("title"):
-            hospital = service
-            break
-    if hospital:
-        nearest = f"Nearest hospital: {hospital['title']}, {float(hospital.get('distance_km') or 0):g} kilometres."
+    primary_type = required_services(raw_category)[0]
+    label = SERVICE_LABELS[primary_type]
+    primary = next((a for a in (plan or {}).get("assignments", []) if a.get("service_category") == primary_type), None)
+    service = (primary or {}).get("service") or {}
+    if primary and primary.get("status") == "available" and service.get("title"):
+        nearest = f"Nearest {label}: {service['title']}, {float(service.get('distance_km') or 0):g} kilometres."
     else:
-        nearest = "Nearest hospital: unavailable."
+        nearest = f"Nearest {label}: unavailable."
     body = f"{category} detected at {place}. {nearest}"
     prefix = settings.CALL_MESSAGE_PREFIX.strip() if settings.DEMO_MODE else ""
     return f"{prefix} {body}".strip()
@@ -339,7 +342,7 @@ class NotificationService:
             # A real lookup failure stays visible; no fake services or routes.
             plan = {
                 "category": category,
-                "required_services": list(REQUIRED_SERVICES.get(category, REQUIRED_SERVICES["other"])),
+                "required_services": list(required_services(category)),
                 "assignments": [], "lookup_error": str(exc),
                 "contact_policy": "display_only_never_auto_dial_discovered_numbers", "created_at": _now(),
             }
@@ -389,13 +392,14 @@ class NotificationService:
         if bot is None:
             self._record(incident_id, "telegram", "failed", "configured demo chat", "missing TELEGRAM_BOT_TOKEN")
             return False
-        nearest = []
+        nearest = []  # only the services this category needs (plan is built from DISPATCH_RULES)
         for item in plan.get("assignments", []):
+            label = SERVICE_LABELS.get(item.get("service_category"), str(item.get("service_category")))
             service = item.get("service") or {}
             if item.get("status") == "available" and service.get("title"):
-                nearest.append(f"{item.get('service_category')}: {service['title']} ({service.get('distance_km', '?')} km)")
+                nearest.append(f"{label}: {service['title']} ({service.get('distance_km', '?')} km)")
             else:
-                nearest.append(f"{item.get('service_category')}: unavailable")
+                nearest.append(f"{label}: none found nearby")
         head = (f"Incident: {incident['category']}\nCamera: {incident['camera_name']}\nPlace: {incident['place_text']}\n"
                 f"Time: {incident.get('detected_at', _now())}\nPeak confidence: {incident['detection']['peak_confidence']:.2f}\n"
                 f"Threshold: {incident['detection']['threshold_applied']:.2f}")

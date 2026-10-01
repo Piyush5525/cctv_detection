@@ -170,10 +170,10 @@ def smoke_call_message():
     plan = {"assignments": []}
     try:
         cached = json.loads(settings.NEARBY_SERVICES_CACHE_PATH.read_text(encoding="utf-8")).get(camera.camera_id, {}).get("services", {})
-        for cat in ("fire", "hospital", "police"):
-            if cached.get(cat):
+        for cat, key in (("fire_station", "fire"), ("hospital", "hospital")):  # DISPATCH_RULES["fire"], primary first
+            if cached.get(key):
                 plan["assignments"].append({"service_category": cat, "status": "available",
-                                            "service": min(cached[cat], key=lambda x: x.get("distance_km", 1e9))})
+                                            "service": min(cached[key], key=lambda x: x.get("distance_km", 1e9))})
     except Exception:
         pass
     incident = {"category": "fire", "camera_name": camera.name, "place_text": camera.place_text}

@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import Map, { Marker, Source, Layer } from 'react-map-gl/mapbox'
+import Map, { Marker } from 'react-map-gl/mapbox'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import toast from 'react-hot-toast'
 import api from '../utils/api'
 import { useWebSocket } from '../context/WebSocketContext'
+import { DispatchCard, DispatchLayer, DispatchLegend, dispatchModel, fitToDispatch } from '../components/dispatch'
+
+// Local style used when Mapbox's style/tiles cannot be loaded (offline): plain dark background,
+// dispatch icons / lines / card keep working because they are drawn by our own layers.
+const BLANK_STYLE = { version: 8, sources: {}, layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#0B1119' } }] }
 
 // ─── Constants ───────────────────────────────────────────────────────
 const TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
@@ -175,44 +180,8 @@ function TimelineItem({ record }) {
   )
 }
 
-// ─── Dispatch Assignment Card ────────────────────────────────────────
-function DispatchCard({ assignment }) {
-  const service = assignment.service
-  const route = assignment.route
-  const icons = { hospital: '🏥', police: '🚔', fire: '🚒' }
-
-  return (
-    <div className="dispatch-card">
-      <div className="dispatch-header">
-        <span className="dispatch-icon">{icons[assignment.service_category] || '🏢'}</span>
-        <strong>{(assignment.service_category || '').replace(/_/g, ' ')}</strong>
-      </div>
-      {assignment.status === 'unavailable' ? (
-        <span className="dispatch-unavailable">{assignment.reason || 'Lookup unavailable'}</span>
-      ) : service ? (
-        <>
-          <span className="dispatch-name">{service.title || service.name || 'Unknown'}</span>
-          <span className="dispatch-phone">{service.phone || 'No phone listed'}</span>
-          {route && (
-            <div className="dispatch-route-info">
-              <span>{route.distance_km ?? '?'} km</span>
-              <span className="dispatch-dot">·</span>
-              <span>{route.eta_minutes ?? '?'} min ETA</span>
-              {route.route_source === 'straight_line_fallback' && (
-                <span className="dispatch-fallback-note">≈ straight line</span>
-              )}
-            </div>
-          )}
-        </>
-      ) : (
-        <span className="dispatch-unavailable">Pending lookup</span>
-      )}
-    </div>
-  )
-}
-
 // ─── Detail Panel ────────────────────────────────────────────────────
-function DetailPanel({ incident, group, onClose }) {
+function DetailPanel({ incident, group, onClose, hot, onHot }) {
   if (!incident) {
     return (
       <aside className="detail-panel empty-detail" id="detail-panel">
@@ -324,13 +293,7 @@ function DetailPanel({ incident, group, onClose }) {
 
       {/* Dispatch Plan */}
       <h3 className="detail-section-title">Dispatch Plan</h3>
-      {plan.assignments?.length > 0 ? (
-        <div className="dispatch-list">
-          {plan.assignments.map((a, i) => <DispatchCard key={i} assignment={a} />)}
-        </div>
-      ) : (
-        <p className="detail-muted">Dispatch lookup pending or unavailable.</p>
-      )}
+      <DispatchCard incident={incident} hot={hot} onHot={onHot} />
       {plan.contact_policy && (
         <p className="detail-contact-policy">
           ⓘ {plan.contact_policy.replace(/_/g, ' ')}
@@ -531,6 +494,9 @@ export default function MapView() {
   const [hoveredId, setHoveredId] = useState(null)
   const [liveId, setLiveId] = useState(null)
   const [showControls, setShowControls] = useState(false)
+  const [hotService, setHotService] = useState(null)
+  const [styleFailed, setStyleFailed] = useState(false)
+  const styleLoadedRef = useRef(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [newIncidentIds, setNewIncidentIds] = useState(new Set())
@@ -671,13 +637,6 @@ export default function MapView() {
         const { data } = await api.get(`/incidents/${incId}`)
         setSelected(data)
         setLiveId(group.camera_id)
-        if (mapRef.current && !PREFERSREDUCEDMOTION) {
-          mapRef.current.flyTo({
-            center: [group.longitude, group.latitude],
-            zoom: 15,
-            duration: 700,
-          })
-        }
       } catch (err) {
         toast.error('Failed to load incident details')
       }
@@ -685,23 +644,22 @@ export default function MapView() {
     []
   )
 
-  // ── Dispatch route overlay on map ──────────────────────────────────
-  const routeGeoJSON = useMemo(() => {
-    if (!selected?.dispatch_plan?.assignments) return null
-    const coords = selected.dispatch_plan.assignments
-      .filter((a) => a.route?.geometry?.coordinates)
-      .flatMap((a) => a.route.geometry.coordinates)
-    if (coords.length < 2) return null
-    // Build individual line features for each assignment
-    const features = selected.dispatch_plan.assignments
-      .filter((a) => a.route?.geometry)
-      .map((a) => ({
-        type: 'Feature',
-        geometry: a.route.geometry,
-        properties: { category: a.service_category },
-      }))
-    return { type: 'FeatureCollection', features }
-  }, [selected])
+  // ── Selecting an incident: fit the map to it plus its services (eased) ──
+  const planKey = selected ? `${selected.incident_id}|${selected.dispatch_plan?.created_at || ''}` : ''
+  useEffect(() => {
+    setHotService(null)
+    if (!selected || !mapRef.current) return
+    if (fitToDispatch(mapRef, selected)) return
+    const g = groups.find((x) => x.camera_id === selected.camera_id)
+    if (g && !PREFERSREDUCEDMOTION) mapRef.current.flyTo({ center: [g.longitude, g.latitude], zoom: 15, duration: 700 })
+  }, [planKey])  // eslint-disable-line react-hooks/exhaustive-deps
+  const dispatchTypes = useMemo(() => dispatchModel(selected).types, [planKey])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // offline: if the Mapbox style never loads, swap to the local blank style once
+  useEffect(() => {
+    const t = setTimeout(() => { if (!styleLoadedRef.current) setStyleFailed(true) }, 8000)
+    return () => clearTimeout(t)
+  }, [])
 
   // ── Live cameras (show all, highlight phones) ──────────────────────
   const liveCameras = useMemo(
@@ -746,7 +704,9 @@ export default function MapView() {
               ref={mapRef}
               mapboxAccessToken={TOKEN}
               initialViewState={{ longitude: 75.79, latitude: 26.91, zoom: 12 }}
-              mapStyle="mapbox://styles/mapbox/dark-v11"
+              mapStyle={styleFailed ? BLANK_STYLE : 'mapbox://styles/mapbox/dark-v11'}
+              onLoad={() => { styleLoadedRef.current = true }}
+              onError={(e) => { if (!styleLoadedRef.current || !e?.target?.isStyleLoaded?.()) setStyleFailed(true) }}
               style={{ width: '100%', height: '100%' }}
               attributionControl={false}
             >
@@ -783,20 +743,8 @@ export default function MapView() {
                 )
               })}
 
-              {/* Dispatch route lines */}
-              {routeGeoJSON && (
-                <Source type="geojson" data={routeGeoJSON}>
-                  <Layer
-                    type="line"
-                    paint={{
-                      'line-color': '#7FE3D0',
-                      'line-width': 3,
-                      'line-dasharray': [2, 2],
-                      'line-opacity': 0.8,
-                    }}
-                  />
-                </Source>
-              )}
+              {/* Service markers + routes for the selected incident only */}
+              <DispatchLayer incident={selected} hot={hotService} onHot={setHotService} />
             </Map>
           ) : (
             /* ── Mapbox-free fallback ─────────────────────────────── */
@@ -852,6 +800,8 @@ export default function MapView() {
             </div>
           </div>
 
+          <DispatchLegend types={dispatchTypes} />
+
           {/* Empty state overlay */}
           {groups.length === 0 && !loading && (
             <div className="map-empty-overlay">
@@ -862,7 +812,7 @@ export default function MapView() {
         </div>
 
         {/* Detail Panel */}
-        <DetailPanel incident={selected} group={groups.find((g) => g.camera_id === selected?.camera_id)} onClose={() => { setSelected(null); setLiveId(null) }} />
+        <DetailPanel incident={selected} group={groups.find((g) => g.camera_id === selected?.camera_id)} onClose={() => { setSelected(null); setLiveId(null) }} hot={hotService} onHot={setHotService} />
       </div>
 
       {/* ── Live Cameras Panel ────────────────────────────────────── */}
