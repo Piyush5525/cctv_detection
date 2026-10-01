@@ -23,25 +23,28 @@ from api.services.event_capture import ActiveEvent
 
 db.init_db()
 
-_subscribers: list[asyncio.Queue] = []
+_subscribers: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = []
 
 
 def subscribe() -> asyncio.Queue:
+    """Called from the WebSocket route (inside the event loop)."""
     q = asyncio.Queue()
-    _subscribers.append(q)
+    _subscribers.append((asyncio.get_running_loop(), q))
     return q
 
 
 def unsubscribe(q: asyncio.Queue):
-    if q in _subscribers:
-        _subscribers.remove(q)
+    _subscribers[:] = [(loop, queue) for loop, queue in _subscribers if queue is not q]
 
 
-async def _notify(incident: Incident):
-    for q in _subscribers:
+def publish_created(incident: Incident) -> None:
+    """Fix pass item 13: thread-safe push to WebSocket subscribers. Called
+    from the encoder/worker thread right after the durable insert; the
+    dashboard keeps its 2 s polling as the fallback."""
+    for loop, queue in list(_subscribers):
         try:
-            q.put_nowait(incident)
-        except asyncio.QueueFull:
+            loop.call_soon_threadsafe(queue.put_nowait, incident)
+        except RuntimeError:  # loop closed
             pass
 
 
@@ -165,6 +168,7 @@ def handle_finished_event(camera_id: str, ev: ActiveEvent, evidence_raw: dict, s
     # network I/O and every notification update has a real incident to edit.
     from api.services.notification_service import notification_service
     notification_service.enqueue(incident)
+    publish_created(incident)
     print(f"[IncidentService] INCIDENT CREATED {incident.incident_id} camera={camera_id} "
           f"category={incident.category.value} peak_conf={peak_conf:.2f}")
     return incident

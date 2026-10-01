@@ -3,6 +3,7 @@ import Map, { Marker, Source, Layer } from 'react-map-gl/mapbox'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import toast from 'react-hot-toast'
 import api from '../utils/api'
+import { useWebSocket } from '../context/WebSocketContext'
 
 // ─── Constants ───────────────────────────────────────────────────────
 const TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
@@ -144,6 +145,8 @@ function TimelineItem({ record }) {
     confirmed: '#34D399',
     false_alarm: '#FF7180',
     cancelled: '#9CABC0',
+    suppressed: '#FFB829',
+    acknowledged: '#34D399',
     failed: '#FF4B3E',
     pending: '#FFB829',
     escalated: '#E74C6F',
@@ -206,7 +209,7 @@ function DispatchCard({ assignment }) {
 }
 
 // ─── Detail Panel ────────────────────────────────────────────────────
-function DetailPanel({ incident, onClose }) {
+function DetailPanel({ incident, group, onClose }) {
   if (!incident) {
     return (
       <aside className="detail-panel empty-detail" id="detail-panel">
@@ -234,6 +237,15 @@ function DetailPanel({ incident, onClose }) {
         )}
         {incident.source === 'live' && (
           <span className="honesty-badge live-badge">🔴 Live detection</span>
+        )}
+        {group?.camera_type === 'phone' && (
+          <span className="honesty-badge phone-badge">Demo phone camera</span>
+        )}
+        {group?.location_basis === 'simulated_placement' && (
+          <span className="honesty-badge sim-badge">Simulated placement</span>
+        )}
+        {group?.location_basis === 'real_installation' && (
+          <span className="honesty-badge">Real installation</span>
         )}
       </div>
 
@@ -288,9 +300,11 @@ function DetailPanel({ incident, onClose }) {
 
       {/* Status buttons */}
       <div className="detail-actions">
-        <StatusButton incident={incident} status="confirmed" label="✓ Confirm" color="#34D399" />
+        <StatusButton incident={incident} status="confirmed" label="✓ Acknowledge" color="#34D399" />
         <StatusButton incident={incident} status="false_positive" label="✗ False positive" color="#FF7180" />
       </div>
+
+      <p className="detail-muted">Acknowledge stops the automatic escalation call. False positive dismisses the incident.</p>
 
       {/* Notification Timeline */}
       <h3 className="detail-section-title">Notification Timeline</h3>
@@ -329,7 +343,7 @@ function StatusButton({ incident, status, label, color }) {
     if (isActive || loading) return
     setLoading(true)
     try {
-      await api.patch(`/incidents/${incident.incident_id}/status`, { status })
+      await api.patch(`/incidents/${incident.incident_id}/status`, { status, reviewed_by: 'dashboard_operator' })
       toast.success(`Incident marked as ${status.replace(/_/g, ' ')}`)
     } catch {
       toast.error('Failed to update status')
@@ -553,35 +567,13 @@ export default function MapView() {
     }
   }, [groups.length])
 
-  // ── WebSocket for real-time incident push ──────────────────────────
+  // ── WebSocket push (shared connection from WebSocketProvider) ──────
+  // The server pushes {type:"incident_created"}; any such message triggers an
+  // immediate refresh. The 2 s polling below stays as the fallback.
+  const { lastMessage } = useWebSocket()
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/api/v1/incidents/ws`
-    let reconnectTimer = null
-
-    function connect() {
-      try {
-        const ws = new WebSocket(wsUrl)
-        wsRef.current = ws
-        ws.onmessage = () => {
-          // Any incident_created message triggers a refresh
-          fetchData()
-        }
-        ws.onclose = () => {
-          reconnectTimer = setTimeout(connect, 3000)
-        }
-        ws.onerror = () => ws.close()
-      } catch {
-        reconnectTimer = setTimeout(connect, 3000)
-      }
-    }
-
-    connect()
-    return () => {
-      clearTimeout(reconnectTimer)
-      wsRef.current?.close()
-    }
-  }, [fetchData])
+    if (lastMessage?.type === 'incident_created') fetchData()
+  }, [lastMessage, fetchData])
 
   // ── Polling fallback (2s) ──────────────────────────────────────────
   useEffect(() => {
@@ -826,7 +818,7 @@ export default function MapView() {
         </div>
 
         {/* Detail Panel */}
-        <DetailPanel incident={selected} onClose={() => { setSelected(null); setLiveId(null) }} />
+        <DetailPanel incident={selected} group={groups.find((g) => g.camera_id === selected?.camera_id)} onClose={() => { setSelected(null); setLiveId(null) }} />
       </div>
 
       {/* ── Live Cameras Panel ────────────────────────────────────── */}

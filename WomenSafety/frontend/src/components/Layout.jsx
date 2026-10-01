@@ -5,16 +5,13 @@ import {
   BarChart3, Settings, Shield, Search,
 } from 'lucide-react'
 import { useWebSocket } from '../context/WebSocketContext'
-import { useIncidents } from '../context/IncidentContext'
 import { PLACEHOLDER_OPERATOR } from './TriageQueue'
 
+// Fix pass item 12: only the working map view is exposed. The other pages
+// (Dashboard, Incidents, Analytics, Evidence, Settings) call v1 endpoints that
+// no longer exist and are hidden until they are rebuilt on the v2 API.
 const NAV = [
-  { to: '/dashboard', label: 'Dashboard',      icon: LayoutDashboard },
-  { to: '/incidents', label: 'Live Incidents', icon: Activity, badge: true },
-  { to: '/map',       label: 'Incident Map',   icon: MapPin },
-  { to: '/evidence',  label: 'Evidence',       icon: Video },
-  { to: '/analytics', label: 'Analytics',      icon: BarChart3 },
-  { to: '/settings',  label: 'Settings',       icon: Settings },
+  { to: '/map', label: 'Incident Map', icon: MapPin },
 ]
 
 function useClock() {
@@ -80,8 +77,7 @@ function TopBar({ isConnected }) {
 
 export function DashboardLayout() {
   const { isConnected } = useWebSocket()
-  const { analytics } = useIncidents()
-  const activeCount = analytics?.active_incidents || 0
+  const activeCount = 0
 
   return (
     <div className="flex h-screen overflow-hidden bg-ground">

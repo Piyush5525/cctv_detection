@@ -1,7 +1,16 @@
 import os
 from pathlib import Path
 from typing import List
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
+
+# Fix pass Phase 1 item 1: os.environ-based reads (SERPAPI_KEY, MAPBOX_TOKEN,
+# TELEGRAM_*, OMNIDIM_*) only worked when main.py happened to call
+# load_dotenv() first. Load the project .env here, by absolute path, so every
+# run mode (uvicorn, run_dashboard --mode api, tests, scripts) sees it.
+# override=False: a real shell/OS env var always wins over the file.
+ENV_FILE = Path(__file__).parent.parent.parent / ".env"
+load_dotenv(ENV_FILE, override=False)
 
 
 class Settings(BaseSettings):
@@ -9,7 +18,16 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
 
-    BACKEND_CORS_ORIGINS: List[str] = ["*"]
+    # Fix pass item 8: bind to localhost and only allow the dashboard origins.
+    API_HOST: str = "127.0.0.1"
+    API_PORT: int = 8000
+    BACKEND_CORS_ORIGINS: List[str] = [
+        "http://127.0.0.1:8000", "http://localhost:8000",
+        "http://127.0.0.1:3000", "http://localhost:3000",
+    ]
+    # Fix pass item 8: header X-Demo-Token must equal this value for
+    # /demo/*, PATCH and DELETE routes. Unset => those routes are refused.
+    DEMO_TOKEN: str = ""
 
     EVIDENCE_CLIPS_DIR: Path = Path(__file__).parent.parent.parent / "evidence_clips"
     EVIDENCE_CLIP_DURATION_SECONDS: int = 10
@@ -73,6 +91,10 @@ class Settings(BaseSettings):
     # API-owned multi-camera demo workers.  They use the existing fire/crash
     # detector interface only; this changes no model or threshold.
     LIVE_CAMERA_WORKERS_ENABLED: bool = True
+    # Fix pass item 3: file-replay "sample" CCTV cameras are OFF by default;
+    # only camera_type "phone" cameras auto-start.
+    SAMPLE_CAMERA_WORKERS_ENABLED: bool = False
+    CAMERA_OPEN_TIMEOUT_S: float = 5.0
     DETECT_MAX_WIDTH: int = 640
     CAMERA_RECONNECT_INITIAL_S: float = 1.0
     CAMERA_RECONNECT_MAX_S: float = 15.0
@@ -93,7 +115,10 @@ class Settings(BaseSettings):
     # Phase 2 should run eval at BOTH FIRE_CRASH_CONFIDENCE_FLOOR (this
     # value) and 0.5, and report both, before deciding which one the
     # live loop should actually use.
-    FIRE_CRASH_CONFIDENCE_FLOOR: float = 0.0
+    # Fix pass item 5 (2026-10-01): demo value is 0.5 (matches the eval
+    # harness / camera_replay floor). Previously 0.0 (current-live behaviour)
+    # which let 0.3-0.4 confidence detections become incidents.
+    FIRE_CRASH_CONFIDENCE_FLOOR: float = 0.5
 
     # Phase 1c follow-up 2 item 3: a TEMPORARY measurement-only flag.
     # When true, main.py's live loop still runs fire/crash detection and
@@ -154,6 +179,7 @@ class Settings(BaseSettings):
     ESCALATION_DELAY_S: float = 60.0
     DEMO_ESCALATION_DELAY_S: float = 20.0
     CALL_MIN_CONFIDENCE: float = 0.6  # fire at/above this confidence escalates to a call immediately, bypassing the delay
+    DEMO_COOLDOWN_S: float = 15.0  # used instead of NOTIFICATION_COOLDOWN_S when DEMO_MODE=true (outbound only)
     NOTIFICATION_COOLDOWN_S: float = 120.0  # at most one alert per camera+category per this many seconds
     MAX_CALLS_PER_HOUR: int = 5
     NOTIFICATION_QUEUE_MAX_SIZE: int = 50
@@ -163,7 +189,7 @@ class Settings(BaseSettings):
 
     class Config:
         case_sensitive = True
-        env_file = ".env"
+        env_file = str(ENV_FILE)
         extra = "allow"
 
 

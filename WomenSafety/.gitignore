@@ -41,3 +41,6 @@ dropped_log.jsonl
 # --- OS ---
 .DS_Store
 Thumbs.db
+
+# Fix pass: moved-aside databases
+*.db.old*

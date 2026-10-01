@@ -1,6 +1,8 @@
 import asyncio
 import cv2
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from api.core.auth import require_demo_token
+from api.services.public_view import public_view
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -10,7 +12,7 @@ from api.services.camera_workers import camera_workers
 from api.services.demo_trigger import trigger_demo_incident
 
 router = APIRouter(prefix="/cameras", tags=["cameras"])
-demo_router = APIRouter(prefix="/demo", tags=["demo"])
+demo_router = APIRouter(prefix="/demo", tags=["demo"], dependencies=[Depends(require_demo_token)])
 
 
 @router.get("/status")
@@ -39,6 +41,6 @@ class DemoTrigger(BaseModel):
 @demo_router.post("/trigger")
 async def trigger(payload: DemoTrigger):
     if get_camera(payload.camera_id) is None: raise HTTPException(404, "Camera not found")
-    try: return await asyncio.to_thread(trigger_demo_incident, payload.camera_id, payload.category)
+    try: return public_view(await asyncio.to_thread(trigger_demo_incident, payload.camera_id, payload.category))
     except ValueError as exc: raise HTTPException(422, str(exc))
     except RuntimeError as exc: raise HTTPException(503, str(exc))

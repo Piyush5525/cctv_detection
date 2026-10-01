@@ -68,22 +68,29 @@ class NotificationService:
             self._poller.join(timeout=3)
 
     def enqueue(self, incident) -> bool:
-        """Queue one incident; caller never waits for network I/O."""
+        """Queue one incident; caller never waits for network I/O.
+        Always queues (cooldown is applied later, to outbound only)."""
         self.start()
-        key = (incident.camera_id, incident.category.value)
-        now = time.monotonic()
-        with self._lock:
-            previous = self._last_by_key.get(key)
-            if previous is not None and now - previous < settings.NOTIFICATION_COOLDOWN_S:
-                self._record(incident.incident_id, "dispatch", "skipped", "cooldown", "camera/category cooldown active")
-                return False
-            self._last_by_key[key] = now
         try:
             self._queue.put_nowait(incident.to_dict() if hasattr(incident, "to_dict") else incident)
             self._record(incident.incident_id, "dispatch", "queued", "internal", "queued for dispatch planning")
             return True
         except Full:
             self._record(incident.incident_id, "dispatch", "failed", "internal", "notification queue is full")
+            return False
+
+    def _cooldown_seconds(self) -> float:
+        return settings.DEMO_COOLDOWN_S if settings.DEMO_MODE else settings.NOTIFICATION_COOLDOWN_S
+
+    def _cooldown_active(self, key: tuple) -> bool:
+        """True if an outbound alert for this camera+category went out within
+        the cooldown window; otherwise stamps now and returns False."""
+        now = time.monotonic()
+        with self._lock:
+            previous = self._last_by_key.get(key)
+            if previous is not None and now - previous < self._cooldown_seconds():
+                return True
+            self._last_by_key[key] = now
             return False
 
     def handle_callback(self, incident_id: str, action: str) -> bool:
@@ -117,7 +124,10 @@ class NotificationService:
             timer = self._call_timers.pop(incident_id, None)
             if timer is not None:
                 timer.cancel()
-        self._record(incident_id, "operator", action, "telegram_operator", "callback received")
+        label = "acknowledged" if action == "confirm" else action
+        self._record(incident_id, "operator", label, "telegram_operator", "callback received")
+        if timer is not None:
+            self._record(incident_id, "call", "cancelled", "configured demo phone", f"automatic call cancelled by operator ({label})")
         return True
 
     def _run(self) -> None:
@@ -157,6 +167,13 @@ class NotificationService:
             self._record(incident_id, "telegram", "skipped", "configured demo chat", enabled.reason)
             self._record(incident_id, "call", "skipped", "configured demo phone", enabled.reason)
             return
+        # Fix pass item 6: cooldown applies ONLY to outbound Telegram/call.
+        # The incident and dispatch plan above are always created; a
+        # suppressed outbound is recorded in the timeline.
+        if self._cooldown_active((incident["camera_id"], category)):
+            self._record(incident_id, "telegram", "suppressed", "configured demo chat", "suppressed: cooldown")
+            self._record(incident_id, "call", "suppressed", "configured demo phone", "suppressed: cooldown")
+            return
         self._send_telegram(incident, plan)
         # A high-confidence detection bypasses the wait. Otherwise the call
         # remains an escalation only if no operator has dismissed it.
@@ -192,11 +209,12 @@ class NotificationService:
         dispatch = ", ".join(f"{item['service_category']}: {item.get('status')}" for item in plan.get("assignments", []))
         caption = (f"Incident: {incident['category']}\nCamera: {incident['camera_name']}\nPlace: {incident['place_text']}\n"
                    f"Time: {incident.get('detected_at', _now())}\nPeak confidence: {incident['detection']['peak_confidence']:.2f}\n"
-                   f"Threshold: {incident['detection']['threshold_applied']:.2f}\nDispatch: {dispatch or 'unavailable'}")
+                   f"Threshold: {incident['detection']['threshold_applied']:.2f}\nDispatch: {dispatch or 'unavailable'}\n"
+                   "Tap Acknowledge to stop the automatic call; False alarm to dismiss it.")
         try:
             import telebot
             markup = telebot.types.InlineKeyboardMarkup()
-            markup.row(telebot.types.InlineKeyboardButton("Confirm", callback_data=f"incident:{incident_id}:confirm"),
+            markup.row(telebot.types.InlineKeyboardButton("Acknowledge (stops auto-call)", callback_data=f"incident:{incident_id}:confirm"),
                        telebot.types.InlineKeyboardButton("False alarm", callback_data=f"incident:{incident_id}:false_alarm"))
             markup.row(telebot.types.InlineKeyboardButton("Escalate now", callback_data=f"incident:{incident_id}:escalate"))
         except Exception:
@@ -234,8 +252,10 @@ class NotificationService:
     def _send_call_if_still_needed(self, incident_id: str, incident: dict) -> None:
         from api.services import incident_service_v2 as incident_service
         current = incident_service.get_incident(incident_id)
-        if current is None or current.get("status") == "false_positive":
-            self._record(incident_id, "call", "cancelled", "configured demo phone", "incident marked false positive or unavailable")
+        if current is None or current.get("status") in ("false_positive", "confirmed"):
+            # "confirmed" == Acknowledge (fix pass item 14): stops the automatic call
+            # whether it was pressed in Telegram or on the dashboard.
+            self._record(incident_id, "call", "cancelled", "configured demo phone", "incident acknowledged, marked false positive or unavailable")
             return
         with self._lock:
             now = time.monotonic()

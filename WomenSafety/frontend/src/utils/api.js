@@ -8,6 +8,15 @@ const api = axios.create({
   timeout: 30000,
 })
 
+// Fix pass item 8: state-changing / demo routes need the shared demo token.
+const DEMO_TOKEN = import.meta.env.VITE_DEMO_TOKEN
+api.interceptors.request.use(config => {
+  if (DEMO_TOKEN && (config.method || 'get').toLowerCase() !== 'get') {
+    config.headers['X-Demo-Token'] = DEMO_TOKEN
+  }
+  return config
+})
+
 api.interceptors.response.use(
   response => response,
   error => {

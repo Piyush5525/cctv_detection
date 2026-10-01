@@ -1,4 +1,6 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from api.core.auth import require_demo_token
 from fastapi.responses import FileResponse, StreamingResponse
 from pathlib import Path
 import mimetypes
@@ -188,7 +190,7 @@ async def get_evidence_clip(filename: str, request: Request):
     )
 
 
-@router.delete("/{filename}")
+@router.delete("/{filename}", dependencies=[Depends(require_demo_token)])
 async def delete_evidence_clip(filename: str):
     clip_path = evidence_service.get_clip_path(filename)
     if not clip_path:

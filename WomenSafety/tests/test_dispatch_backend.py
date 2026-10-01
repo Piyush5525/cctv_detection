@@ -2,6 +2,20 @@
 import json
 import os
 import tempfile
+
+# Fix pass item 3: tests NEVER touch the real incidents.db / evidence dir and
+# never start camera workers. Must be set before api.* is imported.
+_TEST_DIR = tempfile.mkdtemp(prefix="ws-tests-")
+os.environ["INCIDENTS_DB_PATH"] = os.path.join(_TEST_DIR, "incidents.db")
+os.environ["EVIDENCE_ROOT_V2"] = os.path.join(_TEST_DIR, "evidence")
+os.environ["LIVE_CAMERA_WORKERS_ENABLED"] = "false"
+os.environ["ALERTS_ENABLED"] = "false"
+# Real credentials from .env must never be usable by tests (api.core.config
+# loads .env with override=False, so an empty value here wins): no Telegram
+# polling, no Omnidim, no SerpApi/Mapbox traffic.
+for _key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "OMNIDIM_API_KEY", "OMNIDIM_AGENT_ID", "SERPAPI_KEY", "MAPBOX_TOKEN"):
+    os.environ[_key] = ""
+os.environ["DEMO_PHONE_NUMBER"] = ""
 import time
 import unittest
 from pathlib import Path
@@ -65,14 +79,68 @@ class DispatchBackendTests(unittest.TestCase):
         for number in ("100", "+91-100", "91100", "0100", "1 0 0"):
             self.assertFalse(check_call_allowed(number).allowed, number)
 
-    def test_notification_cooldown_is_per_camera_and_category(self):
+    def test_cooldown_suppresses_outbound_only_and_is_per_camera_and_category(self):
         service = NotificationService()
-        service._record = lambda *args, **kwargs: None
-        service._process = lambda incident: None
-        incident = SimpleNamespace(incident_id="one", camera_id="CAM-1", category=SimpleNamespace(value="fire"), to_dict=lambda: {"incident_id": "one"})
-        self.assertTrue(service.enqueue(incident))
-        self.assertFalse(service.enqueue(incident))
+        records = []
+        service._record = lambda iid, channel, status, recipient, detail: records.append((iid, channel, status, detail))
+        service._set_dispatch_plan = lambda iid, plan: records.append((iid, "plan", "set", None))
+        service._send_telegram = lambda inc, plan: records.append((inc["incident_id"], "telegram", "sent", None)) or True
+        service._schedule_call = lambda *a: None
+        settings.ALERTS_ENABLED = True
+        settings.DEMO_MODE = True
+        settings.DEMO_COOLDOWN_S = 60
+        def inc(i, cam="CAM-1", cat="fire"):
+            return {"incident_id": i, "camera_id": cam, "category": cat, "latitude": 1, "longitude": 1, "place_text": "p",
+                    "detection": {"peak_confidence": 0.5}}
+        try:
+            with patch("api.services.notification_service.get_nearby_services", return_value={"services": {}, "source": "cache"}):
+                service._process(inc("one"))
+                service._process(inc("two"))          # same camera+category: outbound suppressed, plan still built
+                service._process(inc("three", cat="crash"))  # other category: not suppressed
+        finally:
+            settings.ALERTS_ENABLED = False
+        self.assertIn(("two", "plan", "set", None), records)
+        self.assertIn(("two", "telegram", "suppressed", "suppressed: cooldown"), records)
+        self.assertNotIn(("two", "telegram", "sent", None), records)
+        self.assertIn(("three", "telegram", "sent", None), records)
+        self.assertTrue(service.enqueue(SimpleNamespace(incident_id="x", camera_id="CAM-1", category=SimpleNamespace(value="fire"), to_dict=lambda: {"incident_id": "x"})))
         service.stop()
+
+    def test_telegram_and_call_blocked_when_recipient_unset(self):
+        from api.services.safety_guard import check_telegram_allowed
+        old_allow, old_chat, old_phone = settings.TELEGRAM_CHAT_ID_ALLOWLIST, os.environ.pop("TELEGRAM_CHAT_ID", None), settings.DEMO_PHONE_NUMBER
+        try:
+            settings.TELEGRAM_CHAT_ID_ALLOWLIST, settings.DEMO_PHONE_NUMBER = "", ""
+            self.assertFalse(check_telegram_allowed("12345").allowed)   # no allowlist and no env chat id => blocked
+            self.assertFalse(check_telegram_allowed(None).allowed)
+            self.assertFalse(check_call_allowed("").allowed)
+            self.assertFalse(check_call_allowed("+919876543210").allowed)
+        finally:
+            settings.TELEGRAM_CHAT_ID_ALLOWLIST, settings.DEMO_PHONE_NUMBER = old_allow, old_phone
+            if old_chat is not None: os.environ["TELEGRAM_CHAT_ID"] = old_chat
+
+    def test_public_view_strips_absolute_paths(self):
+        from api.services.public_view import public_view
+        root = str(Path(settings.EVIDENCE_ROOT_V2) / "CAM" / "2026-10-01" / "id" / "clip.mp4")
+        out = public_view({"evidence": {"clip_path": root}, "list": [root]})
+        self.assertEqual(out["evidence"]["clip_path"], "CAM/2026-10-01/id/clip.mp4")
+        self.assertNotIn(":", out["list"][0])
+
+    def test_demo_routes_need_token(self):
+        from fastapi.testclient import TestClient
+        from api.main import app
+        old = settings.DEMO_TOKEN
+        settings.DEMO_TOKEN = "t0k"
+        try:
+            with TestClient(app) as client:
+                body = {"camera_id": "CAM-SAMPLE-001", "category": "fire"}
+                self.assertEqual(client.post("/api/v1/demo/trigger", json=body).status_code, 403)
+                self.assertEqual(client.patch("/api/v1/incidents/x/status", json={"status": "confirmed"}).status_code, 403)
+                self.assertEqual(client.delete("/api/v1/evidence/x.mp4").status_code, 403)
+                self.assertEqual(client.patch("/api/v1/incidents/x/status", json={"status": "confirmed"}, headers={"X-Demo-Token": "t0k"}).status_code, 404)
+                self.assertEqual(client.get("/api/v1/does-not-exist").status_code, 404)
+        finally:
+            settings.DEMO_TOKEN = old
 
     def test_camera_nearby_http_route_returns_cached_data(self):
         from api import db

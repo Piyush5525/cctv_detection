@@ -1,3 +1,18 @@
+# Demo fix pass (2026-10-01)
+
+Scope lock: no training, no detector or threshold-logic changes. SPEED MODE:
+recommended option picked, decision recorded here.
+
+## Phase 1: Integrity
+1. **.env loading**: `api/core/config.py` calls `load_dotenv(<project>/.env, override=False)` and points pydantic's `env_file` at the same absolute path, so uvicorn / `run_dashboard --mode api` / tests / scripts all see SERPAPI_KEY, MAPBOX_TOKEN, TELEGRAM_*, OMNIDIM_*, DEMO_PHONE_NUMBER. Real shell env still wins. Verified from a different cwd (set/unset only, never values).
+2. **Allowlist no longer vacuous**: `check_telegram_allowed` expects `TELEGRAM_CHAT_ID_ALLOWLIST` or env `TELEGRAM_CHAT_ID`; if neither is set the channel is blocked. Call channel already blocked when `DEMO_PHONE_NUMBER` is unset (reason text now says so). Unit tests cover both.
+3. **Fresh DB**: `incidents.db` (356 rows, mostly synthetic sample-video "live" rows) was backed up (sqlite backup API) to `backups/incidents_20261001_170903_pre_demo_fix_final.db` and moved aside as `incidents_pre_demo_fix_*.db.old` (gitignored). The API creates a new empty `incidents.db` on start. **Decision:** the dev server that held the DB (PID 51188, `run_dashboard.py --mode api`) had to be stopped to release the file lock; it was stopped. Sample (file-replay) camera workers are OFF by default (`SAMPLE_CAMERA_WORKERS_ENABLED=false`); only `camera_type: phone` cameras auto-start, and no detector weights load when there are none. Tests now use a temp DB / evidence dir, workers disabled, and blank real credentials.
+4. **Labelling**: workers tag replay-sample cameras' incidents `source=test_replay` (badge "Recorded footage replay"); `live` is only for non-sample (phone/CCTV) cameras. All current cameras in `cameras.json` are `simulated_placement`; phone cameras keep `real_installation`. Badge ("Simulated placement" / "Demo phone camera" / "Real installation") is shown in the hover popup and in the detail panel.
+5. **FIRE_CRASH_CONFIDENCE_FLOOR default 0.5** (config value only, no logic change). Noted in docs/LIMITATIONS.md.
+6. **Cooldown**: incident and dispatch plan are always created; the cooldown (per camera+category) applies only to outbound Telegram/call and writes `suppressed: cooldown` timeline records. `DEMO_COOLDOWN_S` (default 15) is used when `DEMO_MODE=true`, else `NOTIFICATION_COOLDOWN_S` (120). The slot is consumed only when an outbound attempt is actually allowed (not when `ALERTS_ENABLED=false`).
+7. **Relative paths**: every API response goes through `api/services/public_view.py`, which rewrites absolute evidence/project paths to forward-slash relative paths. Stored JSON is unchanged (the notifier opens files from it).
+8. **Network hardening**: `API_HOST` default `127.0.0.1` (run_dashboard uses it), CORS limited to the dashboard origins (localhost/127.0.0.1 on 8000 and 3000), and `X-Demo-Token` (== env `DEMO_TOKEN`) is required on `/demo/*`, `PATCH /incidents/*/status` and `DELETE /evidence/*`. If `DEMO_TOKEN` is unset those routes return 403. A random token was appended to the local (gitignored) `.env` as `DEMO_TOKEN` and `frontend/.env` as `VITE_DEMO_TOKEN`; the frontend axios client sends it on non-GET calls. Placeholders added to both `.env.example` files.
+
 # Changelog
 
 ## Hackathon dashboard — full rebuild (2026-10-01)

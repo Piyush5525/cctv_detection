@@ -23,7 +23,8 @@ def run_fastapi():
     import uvicorn
     from api.main import app
     
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    from api.core.config import settings
+    uvicorn.run(app, host=settings.API_HOST, port=settings.API_PORT, log_level="info")
 
 
 def run_detection():

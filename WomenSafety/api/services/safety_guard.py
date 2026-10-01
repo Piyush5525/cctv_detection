@@ -117,7 +117,7 @@ def check_call_allowed(phone_number: Optional[str]) -> SafetyCheckResult:
     number is hard-blocked, not on the allowlist (DEMO_MODE or not --
     see module docstring), or simply missing."""
     if not phone_number:
-        return SafetyCheckResult(False, "no phone number provided")
+        return SafetyCheckResult(False, "DEMO_PHONE_NUMBER is unset or no number provided -- call channel blocked")
 
     normalized = _normalize_number(phone_number)
 
@@ -141,9 +141,16 @@ def check_telegram_allowed(chat_id: Optional[str]) -> SafetyCheckResult:
     only -- this exists mainly so a future multi-recipient feature can't
     silently broadcast beyond the demo allowlist without updating this
     function too."""
+    # Fix pass item 2: the allowlist can no longer default to the chat id it
+    # is checking. The expected recipient comes from the explicit allowlist
+    # or, failing that, the TELEGRAM_CHAT_ID env var; if neither is set the
+    # channel is blocked (never "allow all").
+    import os
+    expected = settings.TELEGRAM_CHAT_ID_ALLOWLIST or os.environ.get("TELEGRAM_CHAT_ID", "")
     if not chat_id:
-        return SafetyCheckResult(False, "no chat_id configured")
-    expected = settings.TELEGRAM_CHAT_ID_ALLOWLIST or chat_id
+        return SafetyCheckResult(False, "TELEGRAM_CHAT_ID is unset -- telegram channel blocked")
+    if not expected:
+        return SafetyCheckResult(False, "no allowlisted telegram recipient configured -- telegram channel blocked")
     if str(chat_id) != str(expected):
         return SafetyCheckResult(False, "chat_id is not the allowlisted demo recipient")
     return SafetyCheckResult(True, "allowlisted")

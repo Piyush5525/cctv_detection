@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -61,7 +61,8 @@ if frontend_build.exists():
     async def serve_frontend(full_path: str):
         # Don't serve frontend for API routes or assets
         if full_path.startswith("api/") or full_path.startswith("assets/"):
-            return {"detail": "Not found"}
+            # Fix pass item 12: unknown API paths are a real 404, not a 200.
+            raise HTTPException(status_code=404, detail="Not found")
         index_path = frontend_build / "index.html"
         if index_path.exists():
             return FileResponse(index_path)
