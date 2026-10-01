@@ -386,11 +386,12 @@ function LiveCameraTile({ camera }) {
         <div className="live-feed-offline">
           <span>📵</span>
           <span>Camera offline</span>
+          {camera.error && <span className="live-offline-reason" style={{ fontSize: 12, opacity: 0.8, padding: '0 12px', textAlign: 'center' }}>{camera.error}</span>}
         </div>
       )}
       <div className="live-tile-info">
         <strong>
-          {camera.camera_type === 'phone' ? 'Demo phone camera' : ''} {camera.camera_name}
+          {camera.camera_name}
         </strong>
         <div className="live-tile-status">
           <span className={`status-indicator ${isOnline ? 'online' : 'offline'}`} />
