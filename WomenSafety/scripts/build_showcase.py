@@ -91,7 +91,7 @@ def main():
         if camera is None:
             raise SystemExit(f"ERROR: {SHOWCASE_CAMERAS[slot]} missing from config/cameras.json")
         data = rows[incident_id]
-        data.update({"camera_id": camera.camera_id, "camera_name": camera.name, "place_text": camera.place_text,
+        data.update({"camera_id": camera.camera_id, "camera_name": camera.display_name, "place_text": camera.place_text,
                      "latitude": camera.latitude, "longitude": camera.longitude, "location_precision": "exact",
                      "source": "test_replay", "status": "new", "notifications": [], "reviewed_by": None,
                      "reviewed_at": None, "review_note": None, "notification_status": "not_implemented"})

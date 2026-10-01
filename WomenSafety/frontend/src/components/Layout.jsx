@@ -45,6 +45,16 @@ function TopBar({ isConnected }) {
 
       <div className="flex items-center gap-3">
         <span className="text-[10px] font-mono font-bold tracking-wider rounded bg-signal text-ground px-2 py-1">DEMO MODE</span>
+        {/* Opens Demo Controls (Load showcase, Reset demo, Trigger test incident) on the map page */}
+        <button
+          type="button"
+          id="demo-menu-button"
+          onClick={() => window.dispatchEvent(new CustomEvent('toggle-demo-controls'))}
+          title="Demo controls: load showcase, reset demo, trigger a test incident (Ctrl+Shift+D)"
+          style={{ background: '#FFB829', color: '#0B0F14', fontWeight: 700, fontSize: 13, padding: '6px 14px', borderRadius: 6, border: '1px solid #FFD27A', cursor: 'pointer' }}
+        >
+          🎛 Demo
+        </button>
         {/* Live WS status */}
         <div className={`live-indicator ${!isConnected ? 'opacity-50 border-ink-faint/30 bg-white/5 text-ink-faint' : ''}`}>
           <span className={isConnected ? 'live-dot' : 'w-1.5 h-1.5 rounded-full bg-ink-faint'} />

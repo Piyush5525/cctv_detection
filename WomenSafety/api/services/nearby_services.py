@@ -96,7 +96,10 @@ def _city_from_place_text(place_text: str) -> str:
     segment. Falls back to the whole string if there's no comma, rather
     than guessing or fabricating a city name."""
     parts = [p.strip() for p in place_text.split(",") if p.strip()]
-    return parts[-1] if parts else place_text.strip()
+    # No comma => no "<locality>, <City>" structure (e.g. a free-text label like
+    # "Demo phone installation"): don't put that text in the query as a fake city;
+    # the lat/lng ("ll") already localises the search.
+    return parts[-1] if len(parts) > 1 else ""
 
 
 def _looks_like_right_type(category: str, result: dict) -> bool:
@@ -140,6 +143,61 @@ def _query_serpapi(query: str, lat: float, lng: float) -> list[dict]:
     return data.get("local_results", [])
 
 
+# --- Result filtering (fix pass: SerpApi type/types based) -------------------
+# Each rule returns an exclusion reason or None. Everything excluded is recorded
+# (category, title, reason) in the cache entry's "excluded" list.
+GENERIC_NAMES = {"hospital", "clinic", "police", "police station", "fire", "fire station", "fire brigade",
+                 "police chowki", "police post", "medical center", "medical centre"}
+HOSPITAL_KEEP = ("hospital", "clinic", "medical center", "medical centre", "emergency")
+HOSPITAL_REJECT = ("pharmacy", "medical supply", "medical store", "diagnostic", "laborator", "veterinar", "pet ", "animal", "dental")
+RAILWAY_MARKERS = ("railway", "grp", "rpf", "government railway police", "railway protection")
+FIRE_REJECT_TYPES = ("supplier", "shop", "store", "equipment", "dealer", "extinguisher", "manufacturer", "wholesaler", "distributor")
+FIRE_REJECT_NAME = ("enterprises", "equipment", "dealer", "supplier", "shop", "extinguisher", "traders", "agency")
+PHONE_PREFERENCE_WINDOW_KM = 0.3
+
+
+def _types_text(result: dict) -> str:
+    return (str(result.get("type") or "") + " " + " ".join(str(t) for t in (result.get("types") or []))).lower()
+
+
+def exclusion_reason(category: str, result: dict) -> Optional[str]:
+    """Why this raw SerpApi result must not be offered as a `category` responder (None = keep)."""
+    title = (result.get("title") or "").strip()
+    if len(title) < 3 or title.lower() in GENERIC_NAMES:
+        return "no usable name" if len(title) < 3 else f"generic name ({title!r}) - not identifiable"
+    types, lower_title = _types_text(result), title.lower()
+    if category == "hospital":
+        if any(k in types or k in lower_title for k in HOSPITAL_REJECT) and not any(k in types for k in ("hospital", "emergency")):
+            return f"not a hospital/clinic (type: {types.strip()[:60]})"
+        if not any(k in types for k in HOSPITAL_KEEP):
+            return f"type is not hospital/clinic (type: {types.strip()[:60]})"
+    elif category == "police":
+        if "police" not in types:
+            return f"type is not police station (type: {types.strip()[:60]})"
+        squashed = "".join(ch for ch in lower_title if ch.isalpha())  # catches "G R P" / "G.R.P."
+        if any(m in types or m in lower_title for m in RAILWAY_MARKERS) or "grp" in squashed:
+            return "railway police (GRP/RPF) excluded for road incidents"
+    elif category == "fire":
+        if "fire" not in types:
+            return f"type is not fire station (type: {types.strip()[:60]})"
+        if any(k in types for k in FIRE_REJECT_TYPES) or any(k in lower_title for k in FIRE_REJECT_NAME):
+            return f"equipment/supplier, not a fire station (type: {types.strip()[:60]})"
+    return None
+
+
+def rank_services(services: list[dict]) -> list[dict]:
+    """Nearest first, except that among results within 300 m of each other (measured from the
+    nearest remaining one) those with a phone number come first."""
+    remaining = sorted(services, key=lambda s: s["distance_km"])
+    ranked = []
+    while remaining:
+        window = [s for s in remaining if s["distance_km"] - remaining[0]["distance_km"] <= PHONE_PREFERENCE_WINDOW_KM]
+        best = sorted(window, key=lambda s: (not s.get("phone"), s["distance_km"]))[0]
+        ranked.append(best)
+        remaining.remove(best)
+    return ranked
+
+
 def _extract_service(result: dict, category: str, origin_lat: float, origin_lng: float) -> Optional[dict]:
     gps = result.get("gps_coordinates")
     if not gps or gps.get("latitude") is None or gps.get("longitude") is None:
@@ -149,6 +207,7 @@ def _extract_service(result: dict, category: str, origin_lat: float, origin_lng:
         "title": result.get("title"),
         "category": category,
         "type": result.get("type"),
+        "types": result.get("types") or [],
         "address": result.get("address"),
         "phone": result.get("phone"),
         "rating": result.get("rating"),
@@ -182,26 +241,29 @@ def get_nearby_services(camera_id: str, latitude: float, longitude: float, place
     cache = _load_cache()
     cached = cache.get(camera_id)
     if cached and not force_refresh and _cache_entry_fresh(cached):
-        return {"source": "cache", "cached_at": cached["cached_at"], "services": cached["services"]}
+        return {"source": "cache", "cached_at": cached["cached_at"], "services": cached["services"], "excluded": cached.get("excluded")}
 
     city = _city_from_place_text(place_text)
     result: dict[str, list[dict]] = {}
     errors: dict[str, str] = {}
+    excluded: list[dict] = []
 
     for category, query_word in CATEGORY_QUERIES.items():
-        query = f"{query_word} {city}"
+        query = f"{query_word} {city}".strip()
         try:
             raw_results = _query_serpapi(query, latitude, longitude)
         except NearbyServicesError as e:
             errors[category] = str(e)
             continue
-        extracted = [
-            s for s in (
-                _extract_service(r, category, latitude, longitude) for r in raw_results
-            ) if s is not None
-        ]
-        extracted = _dedupe(extracted)
-        extracted.sort(key=lambda s: s["distance_km"])
+        kept_raw = []
+        for r in raw_results:
+            reason = exclusion_reason(category, r)
+            if reason:
+                excluded.append({"category": category, "title": (r.get("title") or "").strip() or None, "reason": reason})
+            else:
+                kept_raw.append(r)
+        extracted = [s for s in (_extract_service(r, category, latitude, longitude) for r in kept_raw) if s is not None]
+        extracted = rank_services(_dedupe(extracted))
         result[category] = extracted[:settings.NEARBY_SERVICES_KEEP_TOP_N]
 
     if not result and errors:
@@ -209,7 +271,7 @@ def get_nearby_services(camera_id: str, latitude: float, longitude: float, place
         raise NearbyServicesError(f"all categories failed: {errors}")
 
     cached_at = datetime.now(timezone.utc).isoformat()
-    cache[camera_id] = {"cached_at": cached_at, "services": result, "errors": errors or None}
+    cache[camera_id] = {"cached_at": cached_at, "services": result, "errors": errors or None, "excluded": excluded}
     _save_cache(cache)
 
-    return {"source": "live", "cached_at": cached_at, "services": result, "errors": errors or None}
+    return {"source": "live", "cached_at": cached_at, "services": result, "errors": errors or None, "excluded": excluded}

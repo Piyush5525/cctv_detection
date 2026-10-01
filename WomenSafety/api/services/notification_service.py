@@ -25,20 +25,59 @@ CALL_DISPATCH_URL = "https://omnidim.io/api/v1/calls/dispatch"
 
 
 def build_call_message(incident: dict, plan: Optional[dict]) -> str:
-    """Text the Omnidim agent speaks ([alert_message]): demo prefix (DEMO_MODE),
-    category, place, and the nearest services from the dispatch plan. Only names
-    and distances are spoken, never discovered phone numbers."""
-    category = str(incident.get("category", "incident")).replace("_", " ")
-    place = ", ".join(x for x in (incident.get("camera_name"), incident.get("place_text")) if x)
-    nearest = []
+    """Text the Omnidim agent speaks ([alert_message]): demo prefix (DEMO_MODE), the
+    category, the place, and the single nearest hospital with its distance, e.g.
+    "Fire detected at MI Road, Jaipur. Nearest hospital: SR Kalla Hospital, 0.98 kilometres."
+    Names and distances only, never discovered phone numbers."""
+    category = str(incident.get("category", "incident")).replace("_", " ").capitalize()
+    place = incident.get("place_text") or incident.get("camera_name") or "unknown location"
+    hospital = None
     for item in (plan or {}).get("assignments", []):
         service = item.get("service") or {}
-        if item.get("status") == "available" and service.get("title"):
-            nearest.append(f"{item.get('service_category')}: {service['title']}, {service.get('distance_km', '?')} kilometres")
-    services = "; ".join(nearest) if nearest else "nearest services unavailable"
-    body = f"{category} detected at {place}. Nearest services: {services}."
+        if item.get("service_category") == "hospital" and item.get("status") == "available" and service.get("title"):
+            hospital = service
+            break
+    if hospital:
+        nearest = f"Nearest hospital: {hospital['title']}, {float(hospital.get('distance_km') or 0):g} kilometres."
+    else:
+        nearest = "Nearest hospital: unavailable."
+    body = f"{category} detected at {place}. {nearest}"
     prefix = settings.CALL_MESSAGE_PREFIX.strip() if settings.DEMO_MODE else ""
     return f"{prefix} {body}".strip()
+
+
+CAPTION_LIMIT = 1000  # Telegram's caption limit is 1024; keep a margin
+
+
+def compose_caption(head: str, services: list, lines: list, footer: Optional[str] = None, limit: int = CAPTION_LIMIT) -> str:
+    """head + "Nearest services: ..." + status lines (+ footer), always < 1024 chars.
+    Truncation order: shorten the services list ("+N more"), then fall back to a pointer to
+    the dashboard, then (only if head+status lines alone are too long) shorten the head.
+    Status lines (what happened) are never cut before the services list is."""
+    tail = ("\n\n" + "\n".join(lines[-6:])) if lines else ""
+    if footer:
+        tail += "\n" + footer
+    items = [(x if len(x) <= 70 else x[:67] + "...") for x in services]
+
+    def build(services_text: Optional[str]) -> str:
+        return head + (f"\nNearest services: {services_text}" if services_text is not None else "") + tail
+
+    if not services:
+        text = build(None)
+    else:
+        text = None
+        for count in range(len(items), 0, -1):
+            more = f" (+{len(items) - count} more)" if count < len(items) else ""
+            candidate = build("; ".join(items[:count]) + more)
+            if len(candidate) <= limit:
+                text = candidate
+                break
+        if text is None:
+            text = build("see dashboard")
+    if len(text) > limit:  # head or status lines themselves too long
+        room = max(limit - len(tail) - 3, 0)
+        text = head[:room].rstrip() + "..." + tail if room else text[:limit]
+    return text[:limit]
 
 
 def _now() -> str:
@@ -131,9 +170,9 @@ class NotificationService:
         offset = t.strftime("%z")
         return f"{t:%H:%M:%S} UTC{offset[:3]}:{offset[3:]}"
 
-    def _tg_register(self, incident_id: str, chat_id, message_id, photo: bool, base: str) -> None:
+    def _tg_register(self, incident_id: str, chat_id, message_id, photo: bool, head: str, services: list) -> None:
         with self._lock:
-            self._tg[incident_id] = {"chat_id": chat_id, "message_id": message_id, "photo": photo, "base": base,
+            self._tg[incident_id] = {"chat_id": chat_id, "message_id": message_id, "photo": photo, "head": head, "services": services,
                                      "lines": [], "ack": False, "fp": False, "call": False}
 
     def _tg_state_from_message(self, incident_id: str, message) -> Optional[dict]:
@@ -145,7 +184,7 @@ class NotificationService:
             if incident_id not in self._tg:
                 text = getattr(message, "caption", None) or getattr(message, "text", None) or ""
                 self._tg[incident_id] = {"chat_id": message.chat.id, "message_id": message.message_id,
-                                         "photo": bool(getattr(message, "photo", None)), "base": text,
+                                         "photo": bool(getattr(message, "photo", None)), "head": text, "services": [],
                                          "lines": [], "ack": False, "fp": False, "call": False}
             return self._tg[incident_id]
 
@@ -168,8 +207,7 @@ class NotificationService:
             state = self._tg.get(incident_id)
             if state is None:
                 return
-            text = state["base"] + ("\n\n" + "\n".join(state["lines"]) if state["lines"] else "")
-            text = text[:1020] if state["photo"] else text[:4000]  # Telegram caption limit is 1024
+            text = compose_caption(state["head"], state["services"], state["lines"])
             snapshot = dict(state)
         bot = self._get_bot()
         if bot is None:
@@ -358,10 +396,11 @@ class NotificationService:
                 nearest.append(f"{item.get('service_category')}: {service['title']} ({service.get('distance_km', '?')} km)")
             else:
                 nearest.append(f"{item.get('service_category')}: unavailable")
-        base = (f"Incident: {incident['category']}\nCamera: {incident['camera_name']}\nPlace: {incident['place_text']}\n"
+        head = (f"Incident: {incident['category']}\nCamera: {incident['camera_name']}\nPlace: {incident['place_text']}\n"
                 f"Time: {incident.get('detected_at', _now())}\nPeak confidence: {incident['detection']['peak_confidence']:.2f}\n"
-                f"Threshold: {incident['detection']['threshold_applied']:.2f}\nNearest services: {'; '.join(nearest) or 'unavailable'}")
-        caption = base + "\nTap Acknowledge to stop the automatic call; False alarm to dismiss it."
+                f"Threshold: {incident['detection']['threshold_applied']:.2f}")
+        services = nearest or ["unavailable"]
+        caption = compose_caption(head, services, [], footer="Tap Acknowledge to stop the automatic call; False alarm to dismiss it.")
         try:
             import telebot
             markup = telebot.types.InlineKeyboardMarkup()
@@ -380,7 +419,7 @@ class NotificationService:
                 else:
                     sent = bot.send_message(chat_id, caption, reply_markup=markup)
                     is_photo = False
-                self._tg_register(incident_id, chat_id, getattr(sent, "message_id", None), is_photo, base)
+                self._tg_register(incident_id, chat_id, getattr(sent, "message_id", None), is_photo, head, services)
                 bot.send_location(chat_id, incident["latitude"], incident["longitude"])
                 self._record(incident_id, "telegram", "sent", "configured demo chat", None)
                 return True

@@ -50,7 +50,13 @@ class Camera(BaseModel):
 
     @property
     def display_name(self) -> str:
-        return f"Demo phone camera - {self.name}" if self.camera_type == "phone" else self.name
+        # Fix pass: don't double the prefix if the registered name already has it.
+        if self.camera_type != "phone":
+            return self.name
+        prefix = "Demo phone camera"
+        if self.name.lower().startswith(prefix.lower()):
+            return self.name
+        return f"{prefix} - {self.name}"
 
     @field_validator("latitude")
     @classmethod

@@ -77,6 +77,19 @@
       "enabled": true,
       "sample": false,
       "field_of_view_note": "Demo phone camera; fixed coordinates entered by operator."
+    },
+    {
+      "camera_id": "PHONE-DEMO-PHONE-CAMERA-ENTRANCE-2",
+      "name": "Demo phone camera - Entrance",
+      "place_text": "Demo phone installation",
+      "latitude": 26.9124,
+      "longitude": 75.7873,
+      "stream_source": "http://10.172.5.41:8080/video",
+      "camera_type": "phone",
+      "location_basis": "real_installation",
+      "enabled": true,
+      "sample": false,
+      "field_of_view_note": "Demo phone camera; fixed coordinates entered by operator."
     }
   ]
 }

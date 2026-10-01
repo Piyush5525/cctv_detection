@@ -8,6 +8,9 @@ import { useWebSocket } from '../context/WebSocketContext'
 // ─── Constants ───────────────────────────────────────────────────────
 const TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
 const POLL_MS = 2000
+// "confirmed" only ever comes from the Acknowledge button (dashboard or Telegram).
+const STATUS_LABELS = { confirmed: 'Acknowledged', acknowledged: 'Acknowledged', false_positive: 'False positive', false_alarm: 'False alarm' }
+const statusLabel = (status) => STATUS_LABELS[status] || status
 const SLIDE_MS = 3000
 const PREFERSREDUCEDMOTION =
   typeof window !== 'undefined' &&
@@ -161,7 +164,7 @@ function TimelineItem({ record }) {
             {(record.channel || 'unknown').replace(/_/g, ' ')}
           </strong>
           <span className="timeline-status" style={{ color: statusColors[record.status] }}>
-            {record.status}
+            {statusLabel(record.status)}
           </span>
         </div>
         <span className="timeline-time">{fmtDateTime(record.at || record.sent_at || record.timestamp)}</span>
@@ -232,6 +235,9 @@ function DetailPanel({ incident, group, onClose }) {
 
       {/* Honesty badges */}
       <div className="detail-badges">
+        {incident.status && incident.status !== 'new' && (
+          <span className="honesty-badge">{statusLabel(incident.status)}</span>
+        )}
         {incident.source === 'test_replay' && (
           <span className="honesty-badge replay-badge">📹 Recorded footage replay</span>
         )}
@@ -344,7 +350,7 @@ function StatusButton({ incident, status, label, color }) {
     setLoading(true)
     try {
       await api.patch(`/incidents/${incident.incident_id}/status`, { status, reviewed_by: 'dashboard_operator' })
-      toast.success(`Incident marked as ${status.replace(/_/g, ' ')}`)
+      toast.success(`Incident ${statusLabel(status).toLowerCase()}`)
     } catch {
       toast.error('Failed to update status')
     } finally {
@@ -360,7 +366,7 @@ function StatusButton({ incident, status, label, color }) {
       disabled={loading}
       aria-label={label}
     >
-      {loading ? '…' : label}
+      {loading ? '…' : (isActive && status === 'confirmed' ? '✓ Acknowledged' : label)}
     </button>
   )
 }
@@ -613,7 +619,13 @@ export default function MapView() {
     return () => clearInterval(id)
   }, [fetchData])
 
-  // ── Keyboard shortcut for demo controls ────────────────────────────
+  // ── Demo controls: header "Demo" button (Layout) and Ctrl+Shift+D ──
+  useEffect(() => {
+    const toggle = () => setShowControls((v) => !v)
+    window.addEventListener('toggle-demo-controls', toggle)
+    return () => window.removeEventListener('toggle-demo-controls', toggle)
+  }, [])
+
   useEffect(() => {
     const handler = (e) => {
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'd') {

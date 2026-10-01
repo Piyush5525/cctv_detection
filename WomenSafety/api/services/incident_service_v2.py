@@ -107,7 +107,7 @@ def handle_finished_event(camera_id: str, ev: ActiveEvent, evidence_raw: dict, s
         incident = Incident(
             incident_id=evidence_raw["incident_id"],
             camera_id=cam.camera_id,
-            camera_name=cam.name,
+            camera_name=cam.display_name,
             place_text=cam.place_text,
             latitude=cam.latitude,
             longitude=cam.longitude,
