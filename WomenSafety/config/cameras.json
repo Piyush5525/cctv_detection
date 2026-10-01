@@ -14,6 +14,19 @@
       "field_of_view_note": "Demo phone camera. Stream URL and coordinates come from PHONE_CAM001_URL / PHONE_CAM001_LAT / PHONE_CAM001_LNG in .env (optional PHONE_CAM001_USER / PHONE_CAM001_PASSWORD for an app login); nothing sensitive is stored in this file."
     },
     {
+      "camera_id": "CAM-002",
+      "name": "CAM 002",
+      "place_text": "Demo phone installation",
+      "latitude": "env:PHONE_CAM002_LAT",
+      "longitude": "env:PHONE_CAM002_LNG",
+      "stream_source": "env:PHONE_CAM002_URL",
+      "camera_type": "phone",
+      "location_basis": "real_installation",
+      "enabled": true,
+      "sample": false,
+      "field_of_view_note": "Demo phone camera. Stream URL and coordinates come from PHONE_CAM002_URL / PHONE_CAM002_LAT / PHONE_CAM002_LNG in .env (optional PHONE_CAM002_USER / PHONE_CAM002_PASSWORD for an app login); nothing sensitive is stored in this file."
+    },
+    {
       "camera_id": "CAM-SAMPLE-001",
       "name": "MI Road Junction (sample)",
       "place_text": "MI Road, Jaipur",

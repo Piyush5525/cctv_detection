@@ -28,18 +28,18 @@ class RegistryFileTests(unittest.TestCase):
     def setUp(self):
         self.raw = json.loads(CAMERAS_CONFIG_PATH.read_text(encoding="utf-8"))["cameras"]
 
-    def test_single_phone_camera_cam_001_driven_by_env_refs(self):
-        phones = [c for c in self.raw if c["camera_type"] == "phone"]
-        self.assertEqual(len(phones), 1)
-        phone = phones[0]
-        self.assertEqual(phone["camera_id"], "CAM-001")
-        self.assertEqual(phone["name"], "CAM 001")
-        self.assertEqual(phone["location_basis"], "real_installation")
-        self.assertEqual((phone["stream_source"], phone["latitude"], phone["longitude"]),
-                         ("env:PHONE_CAM001_URL", "env:PHONE_CAM001_LAT", "env:PHONE_CAM001_LNG"))
+    def test_phone_cameras_cam_001_and_002_driven_by_env_refs(self):
+        phones = {c["camera_id"]: c for c in self.raw if c["camera_type"] == "phone"}
+        self.assertEqual(sorted(phones), ["CAM-001", "CAM-002"])
+        for number, (cam_id, name) in enumerate((("CAM-001", "CAM 001"), ("CAM-002", "CAM 002")), start=1):
+            phone = phones[cam_id]
+            self.assertEqual(phone["name"], name)
+            self.assertEqual(phone["location_basis"], "real_installation")
+            self.assertEqual((phone["stream_source"], phone["latitude"], phone["longitude"]),
+                             (f"env:PHONE_CAM00{number}_URL", f"env:PHONE_CAM00{number}_LAT", f"env:PHONE_CAM00{number}_LNG"))
+            self.assertNotIn("://", json.dumps(phone))  # no URL anywhere in the file entry
         self.assertEqual(len({c["camera_id"] for c in self.raw}), len(self.raw))  # no duplicate ids
         self.assertFalse([c for c in self.raw if c["camera_id"].startswith("PHONE-")])
-        self.assertNotIn("://", json.dumps(phone))  # no URL anywhere in the file entry
 
     def test_display_name_exactly_once(self):
         with patch.dict(os.environ, PHONE_ENV):

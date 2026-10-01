@@ -56,6 +56,23 @@ curl http://localhost:8000/api/v1/cameras/status
 
 If the phone IP changed, look it up in the IP Webcam app (it shows the address), update `PHONE_CAM001_URL` in `.env`, restart the API.
 
+### CAM 002 (second phone)
+
+```powershell
+Test-NetConnection 10.172.4.180 -Port 8080
+python scripts/check_camera.py CAM-002
+```
+
+Settings in `.env` (same pattern as CAM 001; restart the API after changing them):
+
+```
+PHONE_CAM002_URL=http://10.172.4.180:8080/video
+PHONE_CAM002_LAT=<number>
+PHONE_CAM002_LNG=<number>
+```
+
+Both cameras appear as tiles in the dashboard's **Live Cameras** panel (offline with a clear reason until configured). To add another phone, copy the CAM-002 entry in `config/cameras.json` (new id, name and `PHONE_CAMxxx_*` variables) and add the variables to `.env`.
+
 ## 3. Demo controls (in the browser)
 
 Click the amber **Demo** button in the top bar (or Ctrl+Shift+D): Load showcase, Reset demo, Trigger test incident (pick camera and Fire/Crash).
@@ -107,7 +124,7 @@ npm run dev
 
 1. `python run_dashboard.py --mode api --no-build` (one instance, http://localhost:8000/map loads)
 2. `Test-NetConnection 10.172.5.41 -Port 8080` is True, then `python scripts/check_camera.py CAM-001`
-3. `curl http://localhost:8000/api/v1/cameras/status` shows CAM-001 `online`
+3. `curl http://localhost:8000/api/v1/cameras/status` shows CAM-001 (and CAM-002) `online`
 4. Demo button, Reset demo (or Load showcase) for a clean map
 5. `ALERTS_ENABLED=true` in `.env` only when you want real Telegram and call alerts
 6. Phone nearby with the ringer on; Telegram open on the demo chat
