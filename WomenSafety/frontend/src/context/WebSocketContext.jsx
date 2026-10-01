@@ -4,7 +4,7 @@ import { useIncidents } from './IncidentContext'
 const WebSocketContext = createContext(null)
 
 export function WebSocketProvider({ children }) {
-  const { fetchIncidents } = useIncidents()
+  const { fetchIncidents, fetchAllIncidents } = useIncidents()
   const [isConnected, setIsConnected] = useState(false)
   const [lastMessage, setLastMessage] = useState(null)
   const wsRef = useRef(null)
@@ -32,6 +32,7 @@ export function WebSocketProvider({ children }) {
           setLastMessage(message)
           if (message.type === 'incident_created') {
             fetchIncidents(1)
+            fetchAllIncidents()
           }
         } catch (err) {
           console.error('Failed to parse WS message:', err)
@@ -55,7 +56,7 @@ export function WebSocketProvider({ children }) {
     } catch (err) {
       console.error('Failed to create WebSocket:', err)
     }
-  }, [fetchIncidents])
+  }, [fetchIncidents, fetchAllIncidents])
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {

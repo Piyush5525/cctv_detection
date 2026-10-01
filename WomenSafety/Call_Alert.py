@@ -2,6 +2,8 @@ import os
 import time
 import requests
 
+from api.core.config import settings
+
 # --- Configuration (all values come from environment variables) ---
 # OMNIDIM_API_KEY      -> from https://omnidim.io/api-management
 # OMNIDIM_AGENT_ID     -> the AI voice agent you configured in Omnidimension (integer)
@@ -18,9 +20,20 @@ CALL_COOLDOWN_SECONDS = 120  # avoid spamming calls; separate cooldown from the 
 # Tracked per alert category so one alert type can't block a different one (see Telebot_Alert.py).
 _last_call_time = {}
 
+# Phase 1c follow-ups item 1: same ALERTS_ENABLED gate as Telebot_Alert.py,
+# logged once per process run rather than once per call.
+_disabled_notice_logged = False
+
 
 def send_call_alert(message: str, reason: str = "general"):
     """Triggers an outbound AI voice call via Omnidimension."""
+    global _disabled_notice_logged
+    if not settings.ALERTS_ENABLED:
+        if not _disabled_notice_logged:
+            print("[Call_Alert] ALERTS_ENABLED is false -- alerts disabled for this run.")
+            _disabled_notice_logged = True
+        return
+
     print("call alert started")
 
     if not all([OMNIDIM_API_KEY, OMNIDIM_AGENT_ID, ALERT_PHONE_NUMBER]):

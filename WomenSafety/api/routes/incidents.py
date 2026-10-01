@@ -1,3 +1,10 @@
+"""ARCHIVED, NOT PART OF THE LIVE PRODUCT -- see CHANGELOG.md "CCTV
+Incident Capture Pipeline / Scope Reset" phase.
+
+The live product uses api/routes/incidents_v2.py. This v1 route
+module is NOT registered in api/main.py and serves no live traffic.
+Kept only because it imports from the archived v1 incident model.
+"""
 from datetime import datetime
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -8,7 +15,7 @@ from api.models.incident import (
     PaginatedIncidents, IncidentType, SeverityLevel, IncidentStatus,
     Location, AnalyticsSummary, IncidentTrend, HeatmapPoint
 )
-from api.services.incident_service import incident_service
+from api.services.incident_service import incident_service, QuarantineError
 
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
@@ -19,7 +26,7 @@ class WebSocketMessage(BaseModel):
     data: dict
 
 
-@router.get("", response_model=PaginatedIncidents)
+@router.get("")
 async def list_incidents(
     incident_types: Optional[List[IncidentType]] = Query(None),
     severities: Optional[List[SeverityLevel]] = Query(None),
@@ -44,12 +51,20 @@ async def list_incidents(
         min_confidence=min_confidence,
         search_query=search_query
     )
-    return await incident_service.list_incidents(filter_params, page, page_size, sort_by, sort_desc)
+    result = await incident_service.list_incidents(filter_params, page, page_size, sort_by, sort_desc)
+    # device_id must never appear in a public response (Phase 1b addendum) --
+    # strip it per-incident rather than relying on response_model, which
+    # would re-serialize the full Incident (device_id included).
+    return {
+        **result.model_dump(mode="json", exclude={"incidents"}),
+        "incidents": [inc.to_public_dict() for inc in result.incidents],
+    }
 
 
-@router.get("/recent", response_model=List[Incident])
+@router.get("/recent")
 async def get_recent_incidents(limit: int = Query(10, ge=1, le=50)):
-    return await incident_service.get_recent_incidents(limit)
+    incidents = await incident_service.get_recent_incidents(limit)
+    return [inc.to_public_dict() for inc in incidents]
 
 
 @router.get("/analytics/summary", response_model=AnalyticsSummary)
@@ -67,25 +82,33 @@ async def get_heatmap_data():
     return await incident_service.get_heatmap_data()
 
 
-@router.get("/{incident_id}", response_model=Incident)
+@router.get("/{incident_id}")
 async def get_incident(incident_id: str):
     incident = await incident_service.get_incident(incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
-    return incident
+    return incident.to_public_dict()
 
 
-@router.post("", response_model=Incident, status_code=201)
+@router.post("", status_code=201)
 async def create_incident(incident_data: IncidentCreate):
-    return await incident_service.create_incident(incident_data)
+    try:
+        incident = await incident_service.create_incident(incident_data)
+    except QuarantineError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    # device_id is an opaque per-device token and must never appear in a
+    # public API response (Phase 1b addendum) -- response_model=Incident
+    # would have serialized it directly, so this route builds the response
+    # from to_public_dict() instead of relying on FastAPI's response_model.
+    return incident.to_public_dict()
 
 
-@router.patch("/{incident_id}", response_model=Incident)
+@router.patch("/{incident_id}")
 async def update_incident(incident_id: str, update_data: IncidentUpdate):
     incident = await incident_service.update_incident(incident_id, update_data)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
-    return incident
+    return incident.to_public_dict()
 
 
 @router.delete("/{incident_id}", status_code=204)
@@ -105,7 +128,7 @@ async def incidents_websocket(websocket: WebSocket):
             incident = await queue.get()
             await websocket.send_json({
                 "type": "incident_created",
-                "data": incident.model_dump(mode="json")
+                "data": incident.to_public_dict()
             })
     except WebSocketDisconnect:
         pass

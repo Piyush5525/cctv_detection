@@ -2,7 +2,7 @@ import os
 os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import cv2
 import yaml
@@ -18,6 +18,13 @@ from fire_detection.detector import build_fire_pipeline
 from crash_detection.detector import build_crash_pipeline
 from api_client import api_client, create_incident_from_detection
 from api.services.evidence_service import evidence_service
+from api.models.camera import get_camera
+from api.models.incident_v2 import SourceKind
+from api.services.event_capture import EventCapturePipeline
+from api.services import incident_service_v2 as svc_v2
+from api.services.frame_sampler import RealtimeFrameGate
+from api.core.config import settings
+from api.core.config_dump import print_effective_config
 
 ROTATE_MAP = {
     '90': cv2.ROTATE_90_CLOCKWISE,
@@ -161,6 +168,12 @@ def build_fall_pipeline():
 
 
 def main(headless: bool = False):
+    # Phase 1c follow-up 2 item 3: effective-config dump at startup --
+    # every Settings field's value AND where it came from (default,
+    # env_var, config_file i.e. .env, or cli), secrets redacted by name
+    # pattern. See api/core/config_dump.py.
+    print_effective_config(label="main.py startup")
+
     source = resolve_source(os.environ.get('CAMERA_SOURCE', '0'))
     rotation = resolve_rotation(os.environ.get('CAMERA_ROTATE', '90'))
     # Downscale the working frame for both detection and display -- this is
@@ -180,21 +193,36 @@ def main(headless: bool = False):
     else:
         video_fps = 0.0  # No throttling for live streams
 
+    # LEGACY_DETECTORS_ENABLED (config, default True): a single master
+    # switch for violence/fall/snatch, on top of their existing individual
+    # env-var toggles -- lets fire+crash run alone (matching exactly what
+    # scripts/eval_detectors.py and scripts/camera_replay.py measure/
+    # replay) for apples-to-apples FPS comparison. Default True means
+    # ordinary live-deployment behavior is UNCHANGED unless explicitly
+    # turned off.
+    legacy_enabled = settings.LEGACY_DETECTORS_ENABLED
+    if not legacy_enabled:
+        print('LEGACY_DETECTORS_ENABLED=false -- violence/fall/snatch detectors disabled for this run (fire+crash only)')
+
     model = None
-    if os.environ.get('VIOLENCE_DETECTION', '1') != '0':
+    if legacy_enabled and os.environ.get('VIOLENCE_DETECTION', '1') != '0':
         model = Model()
         print('Violence detection: ON')
     else:
         print('Violence detection: OFF')
 
-    fall_detector, fall_state_mgr = build_fall_pipeline()
+    fall_detector, fall_state_mgr = (None, None)
+    if legacy_enabled:
+        fall_detector, fall_state_mgr = build_fall_pipeline()
     if fall_detector is not None:
         from fall_detection.visualization import draw_persons, draw_emergency_banner
         print('Fall detection: ON')
     else:
         print('Fall detection: OFF')
 
-    snatch_detector, _ = build_snatch_pipeline()
+    snatch_detector = None
+    if legacy_enabled:
+        snatch_detector, _ = build_snatch_pipeline()
     if snatch_detector is not None:
         print('Snatch detection: ON')
     else:
@@ -219,6 +247,46 @@ def main(headless: bool = False):
         print('API client: ON')
     else:
         print('API client: OFF')
+
+    # Shared CCTV event-capture pipeline (CHANGELOG.md "CCTV Incident
+    # Capture Pipeline" phase) -- the same EventCapturePipeline class
+    # scripts/camera_replay.py uses for test replays. This is additive:
+    # it creates real SQLite-backed Incident rows with source="live" and
+    # a real evidence clip/best-frame, alongside (not instead of) the
+    # existing Telegram/call alert + dashboard-API-push logic above,
+    # which stays untouched (scope-locked).
+    live_camera_id = os.environ.get('CAMERA_ID', 'CAM-001')
+    event_pipeline = None
+    if get_camera(live_camera_id) is not None:
+        def _on_incident_ready(cam_id, ev, evidence):
+            svc_v2.handle_finished_event(cam_id, ev, evidence, source=SourceKind.LIVE)
+
+        def _on_quarantine(cam_id, category, reason, event_start, partial_evidence=None):
+            svc_v2.handle_encode_failure(cam_id, category, reason, event_start, partial_evidence)
+
+        event_pipeline = EventCapturePipeline(live_camera_id, _on_incident_ready, _on_quarantine)
+        print(f'CCTV event-capture pipeline: ON (camera_id={live_camera_id})')
+    else:
+        print(f'CCTV event-capture pipeline: OFF (camera_id {live_camera_id!r} not in camera registry -- '
+              f'set CAMERA_ID to a registered camera_id to enable real incident capture)')
+
+    # Frame-sampling unification (same rule as scripts/camera_replay.py and
+    # scripts/eval_detectors.py, via api/services/frame_sampler.py):
+    # detection now runs on sampled frames only (SAMPLE_INTERVAL_S, config,
+    # default 0.25s / ~4fps), not on every single frame. The ring buffer/
+    # event-capture pipeline's add_raw_frame() is still called every
+    # frame (unaffected -- clip quality). If inference falls behind the
+    # sampling interval, the gate drops the frames in between and always
+    # hands the detector the LATEST available frame, never queuing a
+    # backlog; effective_fps (the actually-achieved rate) is logged
+    # periodically. This is a deliberate behavior change from "every
+    # frame" -- see CHANGELOG.md.
+    detection_gate = RealtimeFrameGate(sample_interval_s=settings.SAMPLE_INTERVAL_S, label="fire+crash")
+    print(f'Detection sampling: every {settings.SAMPLE_INTERVAL_S}s (~{1/settings.SAMPLE_INTERVAL_S:.1f} fps target) '
+          f'-- ring buffer still captures every raw frame')
+    if settings.DETECTION_ONLY_MODE:
+        print('DETECTION_ONLY_MODE=true -- fire/crash detection and sampling run normally, but '
+              'EventCapturePipeline.feed_detection() is skipped: no events, no incidents, no ffmpeg encoding this run')
 
     reader = LatestFrameReader(source, fps=video_fps if is_video_file else 0.0)
 
@@ -287,23 +355,50 @@ def main(headless: bool = False):
         if not should_send_to_api(detection_type, track_id):
             return
         try:
+            camera_lat = os.environ.get('CAMERA_LAT')
+            camera_lng = os.environ.get('CAMERA_LNG')
+            if not camera_lat or not camera_lng:
+                print('[APIClient] CAMERA_LAT/CAMERA_LNG not set in environment -- '
+                      'refusing to send incident with an unknown location (no dummy coordinate fallback).')
+                return
             incident = create_incident_from_detection(
                 frame=frame,
                 detection_result={'confidence': confidence, **(detection_data or {})},
                 detection_type=detection_type,
                 camera_id=os.environ.get('CAMERA_ID', 'CAM-001'),
                 location_name=os.environ.get('CAMERA_LOCATION', 'MI Road, Jaipur'),
-                latitude=float(os.environ.get('CAMERA_LAT', '26.9124')),
-                longitude=float(os.environ.get('CAMERA_LNG', '75.7873')),
+                latitude=float(camera_lat),
+                longitude=float(camera_lng),
             )
             if incident:
                 api_client.submit_incident(incident)
         except Exception as e:
             print(f'[APIClient] Error creating incident: {e}')
 
+    def _feed_event_pipeline_detection(frame, category, confidence, boxes, detector_source, model_name, threshold):
+        if event_pipeline is None:
+            return
+        if settings.DETECTION_ONLY_MODE:
+            # Phase 1c follow-up 2 item 3: detection + sampling still ran
+            # (the caller already called process_frame() and the sampling
+            # gate already decided to process this iteration) -- only the
+            # event-lifecycle/encode side is skipped, isolating detection
+            # throughput from event+ffmpeg-encode cost for measurement.
+            return
+        formatted_boxes = [
+            {"label": b.get("class", category), "confidence": b.get("confidence", confidence), "box": list(b.get("box", (0, 0, 0, 0)))}
+            for b in (boxes or [])
+        ]
+        event_pipeline.feed_detection(
+            frame=frame, ts=datetime.now(timezone.utc),
+            category=category, confidence=confidence, boxes=formatted_boxes,
+            detector_source=detector_source, model_name=model_name, threshold_applied=threshold,
+        )
+
     def detection_loop():
         nonlocal latest, was_violent, snatch_alerted, fire_alerted, crash_alerted
         while not stop_detection:
+            iteration_start = time.time()
             frame = get_current_frame()
             if frame is None:
                 time.sleep(0.01)
@@ -311,6 +406,23 @@ def main(headless: bool = False):
 
             # Write frame immediately — don't wait for inference to finish
             publish_live_frame(frame)
+            # Ring buffer/event-capture keeps EVERY raw frame regardless of
+            # the detection sampling interval below (clip quality) -- see
+            # api/services/frame_sampler.py's module docstring.
+            if event_pipeline is not None:
+                event_pipeline.add_raw_frame(frame, datetime.now(timezone.utc))
+
+            # Phase 1c sampling follow-up item 4: this decision is made
+            # from iteration_start (captured at the TOP of this loop
+            # iteration, before violence/fall/snatch/fire/crash all run),
+            # not from any single detector's own inference time -- so a
+            # slow overall iteration (e.g. fall-detection pose inference
+            # alone exceeding the sample interval) correctly causes
+            # fire/crash to be skipped this iteration too, using the
+            # freshest frame next time the gate opens (LatestFrameReader
+            # already guarantees get_current_frame() never returns a
+            # stale queued frame).
+            run_fire_crash_this_iteration = detection_gate.should_process(now=iteration_start)
             # Feed into evidence buffer
             try:
                 evidence_service.add_frame(os.environ.get('CAMERA_ID', 'CAM-001'), frame, datetime.utcnow())
@@ -396,11 +508,25 @@ def main(headless: bool = False):
                 except Exception as e:
                     print(f'[Warning] Snatch detection frame error: {e}')
 
-            # Crash detection
+            # Crash detection -- the fire_crash_gate decision (based on
+            # TOTAL loop-iteration time, not just this detector's own
+            # inference time -- Phase 1c sampling follow-up item 4) was
+            # already made above, before violence/fall/snatch ran, so
+            # that a slow overall iteration (e.g. fall-detection pose
+            # inference taking longer than the sample interval) also
+            # correctly causes this iteration's frame to be skipped for
+            # fire/crash, not just a too-fast crash-detector-only timer.
             crash_result = None
-            if crash_detector is not None:
+            if crash_detector is not None and run_fire_crash_this_iteration:
                 try:
                     crash_result = crash_detector.process_frame(frame)
+                    _feed_event_pipeline_detection(
+                        frame,
+                        'crash' if crash_result and crash_result.detection else None,
+                        crash_result.confidence if crash_result and crash_result.detection else 0.0,
+                        crash_result.boxes if crash_result and crash_result.detection else [],
+                        'yolov8-crash', 'crash_best.pt', 0.5,
+                    )
                     if crash_result and crash_result.detection and not crash_alerted:
                         message = f'CRASH/ACCIDENT DETECTED: {crash_result.detection} (confidence {crash_result.confidence:.2f})'
                         send_telegram_alert(frame, message, reason='crash')
@@ -415,11 +541,18 @@ def main(headless: bool = False):
                 except Exception as e:
                     print(f'[Warning] Crash detection frame error: {e}')
 
-            # Fire detection
+            # Fire detection -- same gate as crash above.
             fire_result = None
-            if fire_detector is not None:
+            if fire_detector is not None and run_fire_crash_this_iteration:
                 try:
                     fire_result = fire_detector.process_frame(frame)
+                    _feed_event_pipeline_detection(
+                        frame,
+                        'fire' if fire_result.detection else None,
+                        fire_result.confidence if fire_result.detection else 0.0,
+                        fire_result.boxes if fire_result.detection else [],
+                        'yolov8-fire', 'best_nano_111.pt', 0.5,
+                    )
                     if fire_result.detection and not fire_alerted:
                         message = f'FIRE/SMOKE DETECTED: {fire_result.detection} (confidence {fire_result.confidence:.2f})'
                         send_telegram_alert(frame, message, reason='fire')
@@ -455,6 +588,8 @@ def main(headless: bool = False):
             reader.stop()
             if api_enabled:
                 api_client.stop()
+            if event_pipeline is not None:
+                event_pipeline.flush(datetime.now(timezone.utc))
         return
 
     window_name = 'Violence & Fall Detection - Live Feed'
@@ -554,6 +689,8 @@ def main(headless: bool = False):
         reader.stop()
         if api_enabled:
             api_client.stop()
+        if event_pipeline is not None:
+            event_pipeline.flush(datetime.now(timezone.utc))
         cv2.destroyAllWindows()
 
 

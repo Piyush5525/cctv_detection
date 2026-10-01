@@ -18,7 +18,12 @@ import {
 import { useIncidents } from '../context/IncidentContext'
 import { classNames } from '../utils/format'
 import { formatNumber } from '../utils/format'
-import { IncidentTypeLabels, SeverityColors, StatusLabels, TYPE_COLORS } from '../utils/types'
+import { IncidentTypeLabels, StatusLabels, TYPE_COLORS } from '../utils/types'
+import { SEVERITY_HEX, STATUS_LABEL } from '../utils/incidentMeta'
+
+const STATUS_HEX = {
+  new: '#ECE9E1', investigating: '#7FE3D0', resolved: '#58C98B', false_positive: '#858B80',
+}
 import { KPICard } from '../components/KPICard'
 import { 
   AlertTriangle, 
@@ -39,7 +44,7 @@ import {
 const COLORS = ['#00d4aa', '#ff4757', '#ffa502', '#3742fa', '#00d4aa', '#ff6b35', '#8b99b3']
 
 export function Analytics() {
-  const { incidents, analytics, trends, isLoading } = useIncidents()
+  const { allIncidents: incidents, analytics, trends, allIncidentsLoading: isLoading } = useIncidents()
 
   const typeDistribution = useMemo(() => {
     const counts = {}
@@ -62,7 +67,7 @@ export function Analytics() {
     return Object.entries(counts).map(([name, value]) => ({
       name: name.charAt(0).toUpperCase() + name.slice(1),
       value,
-      color: SeverityColors[name]?.split(' ')[0].replace('text-', '') || '#8b99b3',
+      color: SEVERITY_HEX[name] || '#8b99b3',
     })).filter(d => d.value > 0)
   }, [incidents])
 
@@ -75,7 +80,7 @@ export function Analytics() {
       status,
       label: StatusLabels[status] || status,
       value,
-      color: StatusColors[status]?.split(' ')[0].replace('text-', '') || '#8b99b3',
+      color: STATUS_HEX[status] || '#8b99b3',
     })).filter(d => d.value > 0)
   }, [incidents])
 
@@ -437,7 +442,7 @@ export function Analytics() {
                     <tr key={type} className="border-b border-command-border/50 hover:bg-command-panel-hover/50">
                       <td className="px-3 py-2 font-medium text-command-text">{label}</td>
                       {['critical', 'high', 'medium', 'low'].map(sev => (
-                        <td key={sev} className="px-3 py-2 text-center font-mono" style={{ color: SeverityColors[sev]?.split(' ')[0].replace('text-', '') }}>
+                        <td key={sev} className="px-3 py-2 text-center font-mono" style={{ color: SEVERITY_HEX[sev] }}>
                           {severityCounts[sev] || '—'}
                         </td>
                       ))}

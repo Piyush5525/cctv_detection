@@ -1,0 +1,7 @@
+[
+  {"path": "data/crash.mp4", "expected_class": "Accident"},
+  {"path": "data/fire.mp4", "expected_class": "fire"},
+  {"path": "testing/snatch.mp4", "expected_class": "snatching"},
+  {"path": "data/office_fight.mp4", "expected_class": "violence"},
+  {"path": "testing/snatch.mp4", "expected_class": "fall"}
+]

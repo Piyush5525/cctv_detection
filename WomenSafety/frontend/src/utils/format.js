@@ -17,6 +17,7 @@ export function formatRelativeTime(dateString) {
 }
 
 export function formatConfidence(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return 'Not scored'
   return `${Math.round(value * 100)}%`
 }
 

@@ -7,13 +7,13 @@ from pathlib import Path
 import os
 
 from api.core.config import settings
-from api.routes import incidents, evidence, system
-from api.services.incident_service import incident_service
+from api.routes import incidents_v2, evidence, system, detect, emergency, map as map_routes
+from api import db as db_v2
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await incident_service.initialize()
+    db_v2.init_db()
     yield
 
 
@@ -34,9 +34,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(incidents.router, prefix=settings.API_V1_STR)
+app.include_router(incidents_v2.router, prefix=settings.API_V1_STR)
 app.include_router(evidence.router, prefix=settings.API_V1_STR)
 app.include_router(system.router, prefix=settings.API_V1_STR)
+app.include_router(detect.router, prefix=settings.API_V1_STR)
+app.include_router(emergency.router, prefix=settings.API_V1_STR)
+app.include_router(map_routes.router, prefix=settings.API_V1_STR)
 
 frontend_build = Path(__file__).parent.parent / "frontend" / "build"
 if frontend_build.exists():

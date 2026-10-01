@@ -26,10 +26,17 @@ frontend/build/
 outputs/
 results/
 evidence_clips/
+evidence/
 live_frame.jpg
 live_frame.jpg.tmp
 alert.jpg
 *.log
+incidents.db
+incidents.db-wal
+incidents.db-shm
+backups/
+scraped_data/
+dropped_log.jsonl
 
 # --- OS ---
 .DS_Store

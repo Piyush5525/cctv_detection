@@ -42,18 +42,27 @@ export const IncidentTypeIcons = {
   [IncidentType.OTHER]: 'alert-circle',
 }
 
+// Point at the new Reticle chip/pill classes (see src/index.css + src/utils/incidentMeta.js)
 export const SeverityColors = {
-  [SeverityLevel.LOW]: 'text-command-text-dim bg-command-text-dim/20',
-  [SeverityLevel.MEDIUM]: 'text-command-info bg-command-info/20',
-  [SeverityLevel.HIGH]: 'text-command-warning bg-command-warning/20',
-  [SeverityLevel.CRITICAL]: 'text-command-danger bg-command-danger/20',
+  [SeverityLevel.LOW]: 'chip-sev-low',
+  [SeverityLevel.MEDIUM]: 'chip-sev-medium',
+  [SeverityLevel.HIGH]: 'chip-sev-high',
+  [SeverityLevel.CRITICAL]: 'chip-sev-critical',
 }
 
 export const StatusColors = {
-  [IncidentStatus.NEW]: 'text-command-info bg-command-info/20',
-  [IncidentStatus.INVESTIGATING]: 'text-command-warning bg-command-warning/20',
-  [IncidentStatus.RESOLVED]: 'text-command-accent bg-command-accent/20',
-  [IncidentStatus.FALSE_POSITIVE]: 'text-command-text-dim bg-command-text-dim/20',
+  [IncidentStatus.NEW]: 'pill-status-new',
+  [IncidentStatus.INVESTIGATING]: 'pill-status-investigating',
+  [IncidentStatus.RESOLVED]: 'pill-status-resolved',
+  [IncidentStatus.FALSE_POSITIVE]: 'pill-status-false_positive',
+}
+
+// Severity-driven hex (red/orange/yellow/blue reserved for severity only per design system)
+export const SEVERITY_HEX = {
+  [SeverityLevel.CRITICAL]: '#FF4B3E',
+  [SeverityLevel.HIGH]: '#FF8A1F',
+  [SeverityLevel.MEDIUM]: '#F5C542',
+  [SeverityLevel.LOW]: '#5B9BFF',
 }
 
 export const StatusLabels = {

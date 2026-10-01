@@ -1,0 +1,48 @@
+{
+  "cameras": [
+    {
+      "camera_id": "CAM-001",
+      "name": "Default live camera (main.py CAMERA_ID default)",
+      "place_text": "Unconfigured -- set CAMERA_ID/CAMERA_PLACE env vars for a real deployment",
+      "latitude": 26.9124,
+      "longitude": 75.7873,
+      "stream_source": "0",
+      "enabled": true,
+      "sample": true,
+      "field_of_view_note": "Registered only because main.py/api_client.py/detect.py hardcode 'CAM-001' as their fallback camera_id default -- this is a placeholder registration, not a real installed camera. A real deployment must set CAMERA_ID to a properly registered camera_id."
+    },
+    {
+      "camera_id": "CAM-SAMPLE-001",
+      "name": "MI Road Junction (sample)",
+      "place_text": "MI Road, Jaipur",
+      "latitude": 26.9124,
+      "longitude": 75.7873,
+      "stream_source": "data/crash.mp4",
+      "enabled": true,
+      "sample": true,
+      "field_of_view_note": "Faces east along MI Road toward Panch Batti. Sample replays data/crash.mp4 for testing."
+    },
+    {
+      "camera_id": "CAM-SAMPLE-002",
+      "name": "C-Scheme Market Entrance (sample)",
+      "place_text": "C-Scheme, Jaipur",
+      "latitude": 26.9150,
+      "longitude": 75.7920,
+      "stream_source": "data/fire.mp4",
+      "enabled": true,
+      "sample": true,
+      "field_of_view_note": "Covers main market gate, no pedestrian-only angle. Sample replays data/fire.mp4 for testing."
+    },
+    {
+      "camera_id": "CAM-SAMPLE-003",
+      "name": "Bani Park Crossing (sample)",
+      "place_text": "Bani Park, Jaipur",
+      "latitude": 26.9200,
+      "longitude": 75.7850,
+      "stream_source": "testing/snatch.mp4",
+      "enabled": true,
+      "sample": true,
+      "field_of_view_note": "Sample replays testing/snatch.mp4 for testing. No dedicated normal-traffic-only clip exists in this repo -- see CHANGELOG.md open questions."
+    }
+  ]
+}

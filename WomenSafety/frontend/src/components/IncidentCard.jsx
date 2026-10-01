@@ -2,26 +2,11 @@ import { useState } from 'react'
 import {
   ChevronDown, ChevronRight, MapPin, Clock,
   Play, Download, MoreVertical, CheckCircle,
-  AlertTriangle, Target, Video, X
+  Video, X
 } from 'lucide-react'
 import { formatRelativeTime, formatConfidence } from '../utils/format'
 import { useIncidents } from '../context/IncidentContext'
-
-const TYPE_COLORS = {
-  violence: '#f87171', fall: '#fbbf24', women_safety: '#60a5fa',
-  snatch: '#a78bfa', fire: '#fb923c', crash: '#f97316', other: '#94a3b8',
-}
-const SEV_COLORS = { critical: '#f87171', high: '#fb923c', medium: '#60a5fa', low: '#94a3b8' }
-const TYPE_LABELS = {
-  violence: 'Violence', fall: 'Fall', women_safety: "Women's Safety",
-  snatch: 'Snatch', fire: 'Fire', crash: 'Crash', other: 'Other',
-}
-const STATUS_STYLE = {
-  new:            { label: 'New',            cls: 'text-blue-400 bg-blue-500/10' },
-  investigating:  { label: 'Investigating',  cls: 'text-amber-400 bg-amber-500/10' },
-  resolved:       { label: 'Resolved',       cls: 'text-emerald-400 bg-emerald-500/10' },
-  false_positive: { label: 'False Positive', cls: 'text-slate-400 bg-slate-500/10' },
-}
+import { TYPE_LABELS, SEVERITY_LABEL, SEVERITY_HEX, severityChipClass, STATUS_LABEL, statusPillClass } from '../utils/incidentMeta'
 
 export function IncidentCard({ incident, compact = false }) {
   const { updateIncident } = useIncidents()
@@ -29,9 +14,7 @@ export function IncidentCard({ incident, compact = false }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [videoOpen, setVideoOpen] = useState(false)
 
-  const color = TYPE_COLORS[incident.incident_type] || '#94a3b8'
-  const sevColor = SEV_COLORS[incident.severity] || '#94a3b8'
-  const statusInfo = STATUS_STYLE[incident.status] || STATUS_STYLE.new
+  const color = SEVERITY_HEX[incident.severity] || '#5B9BFF'
   const hasClip = !!incident.evidence_clip?.video_path
   const clipFile = hasClip ? incident.evidence_clip.video_path.split(/[\\/]/).pop() : null
 
@@ -40,7 +23,7 @@ export function IncidentCard({ incident, compact = false }) {
   return (
     <div className="bg-[#0d1526] border border-[#1a2540] rounded-xl overflow-hidden animate-fade-up">
       {/* Severity bar */}
-      <div className="h-0.5 w-full" style={{ background: sevColor }} />
+      <div className="h-0.5 w-full" style={{ background: color }} />
 
       <div className="p-4">
         {/* Header row */}
@@ -55,15 +38,14 @@ export function IncidentCard({ incident, compact = false }) {
 
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm font-semibold text-slate-200">
+              <span className="text-sm font-semibold text-ink">
                 {TYPE_LABELS[incident.incident_type] || incident.incident_type}
               </span>
-              <span className="badge text-[10px] font-semibold capitalize"
-                style={{ color: sevColor, background: `${sevColor}15` }}>
-                {incident.severity}
+              <span className={severityChipClass(incident.severity)}>
+                {SEVERITY_LABEL[incident.severity]}
               </span>
-              <span className={`badge text-[10px] ${statusInfo.cls}`}>
-                {statusInfo.label}
+              <span className={statusPillClass(incident.status)}>
+                {STATUS_LABEL[incident.status]}
               </span>
             </div>
             <div className="flex items-center gap-3 mt-1 text-xs text-slate-600">

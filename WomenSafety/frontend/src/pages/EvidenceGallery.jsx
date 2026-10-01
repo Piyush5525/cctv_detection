@@ -97,19 +97,20 @@ export function EvidenceGallery() {
 
 function ClipCard({ clip, onPlay, onDelete }) {
   const sizeKb = (clip.size / 1024).toFixed(0)
-  const name = clip.filename.replace('.mp4', '')
-  const thumbFile = `${name}_thumb.jpg`
+  const thumbFile = clip.thumbnail_filename
 
   return (
     <div className="card p-0 overflow-hidden group">
       {/* Thumbnail / preview */}
       <div className="relative bg-black" style={{ aspectRatio: '16/9' }}>
-        <img
-          src={`/api/v1/evidence/thumbnail/${thumbFile}`}
-          alt="clip thumbnail"
-          className="w-full h-full object-cover opacity-70"
-          onError={e => { e.target.style.display = 'none' }}
-        />
+        {thumbFile && (
+          <img
+            src={`/api/v1/evidence/thumbnail/${thumbFile}`}
+            alt="clip thumbnail"
+            className="w-full h-full object-cover opacity-70"
+            onError={e => { e.target.style.display = 'none' }}
+          />
+        )}
         <div className="absolute inset-0 flex items-center justify-center">
           <button
             onClick={onPlay}

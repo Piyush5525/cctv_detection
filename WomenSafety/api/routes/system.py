@@ -97,8 +97,4 @@ async def get_system_status():
         "version": settings.VERSION,
         "api_version": settings.API_V1_STR,
         "evidence_clips_dir": str(settings.EVIDENCE_CLIPS_DIR),
-        "jaipur_center": {
-            "lat": settings.JAIPUR_CENTER_LAT,
-            "lng": settings.JAIPUR_CENTER_LNG
-        }
     }

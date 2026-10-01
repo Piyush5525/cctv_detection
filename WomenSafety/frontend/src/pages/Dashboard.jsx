@@ -1,44 +1,72 @@
-import { useMemo } from 'react'
+import { useMemo, useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
-  AlertTriangle, CheckCircle, Target, TrendingUp,
-  Activity, Flame, Car, Shield, MapPin, Video,
-  RefreshCw, Clock
+  AlertTriangle, X, ArrowRight,
 } from 'lucide-react'
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer
+  ResponsiveContainer, Line, LineChart,
 } from 'recharts'
 import { useIncidents } from '../context/IncidentContext'
-import { formatRelativeTime, formatConfidence } from '../utils/format'
+import { useWebSocket } from '../context/WebSocketContext'
+import { formatRelativeTime, formatConfidence, classNames } from '../utils/format'
+import {
+  TYPE_LABELS, SEVERITY_ORDER, SEVERITY_HEX,
+} from '../utils/incidentMeta'
 import { LiveVideo } from '../components/LiveVideo'
-import { MiniMap } from '../components/MiniMap'
 
-const TYPE_META = {
-  violence:     { label: 'Violence',       color: '#f87171', Icon: Activity },
-  fall:         { label: 'Fall',           color: '#fbbf24', Icon: AlertTriangle },
-  women_safety: { label: "Women's Safety", color: '#60a5fa', Icon: Shield },
-  snatch:       { label: 'Snatch',         color: '#a78bfa', Icon: Target },
-  fire:         { label: 'Fire',           color: '#fb923c', Icon: Flame },
-  crash:        { label: 'Crash',          color: '#f97316', Icon: Car },
+const MODEL_LANES = [
+  { key: 'violence', label: 'Violence' },
+  { key: 'fall', label: 'Fall' },
+  { key: 'snatch', label: 'Snatch' },
+  { key: 'fire', label: 'Fire' },
+  { key: 'crash', label: 'Crash' },
+]
+
+function useClockIST() {
+  const [now, setNow] = useState(new Date())
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  return now
 }
 
-const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low']
-const SEVERITY_COLORS = { critical: '#f87171', high: '#fb923c', medium: '#60a5fa', low: '#94a3b8' }
+function KpiShell({ children, className }) {
+  return <div className={classNames('card-sm relative overflow-hidden flex flex-col', className)}>{children}</div>
+}
+
+function SeverityMixBar({ counts, total }) {
+  if (!total) return <div className="h-1.5 rounded-full bg-ground-line" />
+  return (
+    <div className="h-1.5 rounded-full overflow-hidden flex bg-ground-line">
+      {SEVERITY_ORDER.map(sev => {
+        const pct = (counts[sev] / total) * 100
+        if (!pct) return null
+        return <div key={sev} style={{ width: `${pct}%`, background: SEVERITY_HEX[sev] }} />
+      })}
+    </div>
+  )
+}
+
+function Sparkline({ data, color }) {
+  return (
+    <div className="h-8 -mx-1">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data}>
+          <Line type="monotone" dataKey="v" stroke={color} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
 
 export function Dashboard() {
-  const { incidents, analytics, trends, heatmap, isLoading, refetch } = useIncidents()
+  const { allIncidents: incidents, analytics, trends, systemHealth, refetch } = useIncidents()
+  useWebSocket() // subscribed for live updates via WebSocketProvider side effects
+  const navigate = useNavigate()
+  const [dismissedToastId, setDismissedToastId] = useState(null)
 
-  const recent = useMemo(() => incidents.slice(0, 6), [incidents])
-
-  const chartData = useMemo(() =>
-    [...trends].reverse().map(t => ({
-      time: t.period,
-      total: t.count,
-      violence: t.by_type?.violence || 0,
-      fire: t.by_type?.fire || 0,
-      crash: t.by_type?.crash || 0,
-    })),
-  [trends])
+  useEffect(() => { refetch() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const severityCounts = useMemo(() => {
     const c = { critical: 0, high: 0, medium: 0, low: 0 }
@@ -46,264 +74,201 @@ export function Dashboard() {
     return c
   }, [incidents])
 
-  const typeCounts = useMemo(() => {
-    const c = {}
-    incidents.forEach(i => { c[i.incident_type] = (c[i.incident_type] || 0) + 1 })
-    return c
+  const openIncidents = useMemo(
+    () => incidents.filter(i => i.status !== 'resolved' && i.status !== 'false_positive'),
+    [incidents]
+  )
+
+  const falsePositiveRate = useMemo(() => {
+    if (incidents.length === 0) return 0
+    const fp = incidents.filter(i => i.status === 'false_positive').length
+    return (fp / incidents.length) * 100
   }, [incidents])
+
+  const detectionsSpark = useMemo(
+    () => [...trends].reverse().map(t => ({ v: t.count })),
+    [trends]
+  )
+
+  const newestCritical = useMemo(() => {
+    return [...incidents]
+      .filter(i => i.severity === 'critical' && i.status === 'new')
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0]
+  }, [incidents])
+
+  const featureIncident = useMemo(() => {
+    return [...incidents].sort((a, b) => {
+      const order = { critical: 0, high: 1, medium: 2, low: 3 }
+      const sevDiff = (order[a.severity] ?? 9) - (order[b.severity] ?? 9)
+      if (sevDiff !== 0) return sevDiff
+      return new Date(b.timestamp) - new Date(a.timestamp)
+    })[0]
+  }, [incidents])
+
+  // Detection stream swimlanes: bucket incidents by type over the last 60 minutes
+  const swimlanes = useMemo(() => {
+    const now = Date.now()
+    const windowMs = 60 * 60 * 1000
+    return MODEL_LANES.map(({ key, label }) => {
+      const events = incidents.filter(i => i.incident_type === key && (now - new Date(i.timestamp).getTime()) <= windowMs)
+      const ticks = events.map(e => ({
+        id: e.incident_id,
+        ageFrac: Math.min(1, (now - new Date(e.timestamp).getTime()) / windowMs),
+        confidence: e.confidence,
+        severity: e.severity,
+      }))
+      return { key, label, ticks, count: events.length }
+    })
+  }, [incidents])
+
+  const citiesCovered = useMemo(() => {
+    const cities = new Set()
+    incidents.forEach(i => {
+      const addr = i.location?.address || ''
+      if (!addr.toLowerCase().includes('unspecified')) {
+        cities.add(addr.split(',')[0].trim().toLowerCase())
+      }
+    })
+    return cities.size
+  }, [incidents])
+
+  const openCount = analytics?.active_incidents ?? openIncidents.length
 
   return (
     <div className="space-y-5">
-
-      {/* ── Header ── */}
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-slate-100">Command Dashboard</h1>
-          <p className="text-sm text-slate-500 mt-0.5">Real-time incident monitoring</p>
+          <h1 className="text-2xl font-display font-semibold text-ink">Overview</h1>
+          <p className="text-sm text-ink-faint mt-0.5">Real-time incident monitoring</p>
         </div>
-        <button
-          onClick={refetch}
-          disabled={isLoading}
-          className="btn-ghost border border-[#1a2540] text-xs"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-          Refresh
-        </button>
       </div>
 
-      {/* ── KPI Row ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <KpiCard
-          label="Active Incidents"
-          value={analytics?.active_incidents ?? 0}
-          icon={AlertTriangle}
-          color="#f87171"
-          sub="Currently open"
-        />
-        <KpiCard
-          label="Critical"
-          value={analytics?.critical_incidents ?? 0}
-          icon={Target}
-          color="#fb923c"
-          sub="Needs immediate action"
-        />
-        <KpiCard
-          label="Resolved Today"
-          value={analytics?.resolved_today ?? 0}
-          icon={CheckCircle}
-          color="#34d399"
-          sub="Closed incidents"
-        />
-        <KpiCard
-          label="Accuracy"
-          value={`${analytics?.detection_accuracy ?? 0}%`}
-          icon={TrendingUp}
-          color="#60a5fa"
-          sub="Detection confidence"
-        />
+      {/* KPI Row */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <KpiShell>
+          <p className="text-[11px] font-mono uppercase tracking-wider text-ink-faint mb-2">Open incidents</p>
+          <p className="text-3xl font-display font-semibold text-ink">{openCount}</p>
+          <div className="mt-3">
+            <SeverityMixBar counts={severityCounts} total={incidents.length} />
+          </div>
+          <p className="text-[11px] font-mono text-sev-critical mt-1.5">{severityCounts.critical} CRITICAL</p>
+        </KpiShell>
+
+        <KpiShell>
+          <p className="text-[11px] font-mono uppercase tracking-wider text-ink-faint mb-2">Avg response</p>
+          <p className="text-3xl font-display font-semibold text-ink">
+            {analytics ? `${Math.floor(analytics.avg_response_time_seconds / 60)}m ${Math.round(analytics.avg_response_time_seconds % 60)}s` : '—'}
+          </p>
+          <p className="text-[11px] text-ink-faint mt-1.5">vs 7-day avg</p>
+          <Sparkline data={detectionsSpark.length ? detectionsSpark : [{ v: 0 }, { v: 0 }]} color="#7FE3D0" />
+        </KpiShell>
+
+        <KpiShell>
+          <p className="text-[11px] font-mono uppercase tracking-wider text-ink-faint mb-2">Detections / hr</p>
+          <p className="text-3xl font-display font-semibold text-ink">
+            {trends.length ? trends[0].count : 0}
+          </p>
+          <p className="text-[11px] text-ink-faint mt-1.5">last hour bucket</p>
+          <Sparkline data={detectionsSpark.length ? detectionsSpark : [{ v: 0 }, { v: 0 }]} color="#5B9BFF" />
+        </KpiShell>
+
+        <KpiShell className="group">
+          <p className="text-[11px] font-mono uppercase tracking-wider text-ink-faint mb-2">False-positive rate</p>
+          <p className="text-3xl font-display font-semibold text-ink">{falsePositiveRate.toFixed(1)}%</p>
+          <p className="text-[11px] text-ink-faint mt-1.5">of all detections</p>
+          {newestCritical && (
+            <button
+              onClick={() => navigate('/incidents')}
+              className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity text-[10px] font-mono text-signal border border-signal/30 rounded px-1.5 py-0.5"
+            >
+              Follow critical
+            </button>
+          )}
+        </KpiShell>
+
+        <KpiShell>
+          <p className="text-[11px] font-mono uppercase tracking-wider text-ink-faint mb-2">Cities covered</p>
+          <p className="text-3xl font-display font-semibold text-ink">{citiesCovered}</p>
+          <p className="text-[11px] text-ink-faint mt-1.5">with a specific mapped location</p>
+        </KpiShell>
       </div>
 
-      {/* ── Main Grid ── */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
-
-        {/* Left: Live Feed + Incidents */}
-        <div className="xl:col-span-2 space-y-5">
-          <LiveVideo />
-
-          {/* Recent Incidents */}
-          <div className="card p-0">
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#1a2540]">
-              <span className="text-sm font-semibold text-slate-200">Recent Incidents</span>
-              <span className="flex items-center gap-1.5 text-xs text-emerald-400">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                Live
+      {/* Camera wall */}
+      <div className="space-y-3">
+        <LiveVideo featureIncident={featureIncident} />
+        {newestCritical && dismissedToastId !== newestCritical.incident_id && (
+          <div className="incident-card-critical flex items-center justify-between gap-3 px-4 py-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <AlertTriangle className="w-4 h-4 text-sev-critical flex-shrink-0" />
+              <span className="text-sm text-ink truncate">
+                New critical: {TYPE_LABELS[newestCritical.incident_type]} at {newestCritical.location?.camera_id}
+              </span>
+              <span className="text-xs font-mono text-ink-faint flex-shrink-0">
+                {formatRelativeTime(newestCritical.timestamp)}
               </span>
             </div>
-            <div className="divide-y divide-[#1a2540] max-h-80 overflow-y-auto">
-              {recent.length === 0 ? (
-                <div className="py-12 text-center">
-                  <Activity className="w-8 h-8 mx-auto mb-2 text-slate-700" />
-                  <p className="text-sm text-slate-600">No incidents detected</p>
-                </div>
-              ) : (
-                recent.map(inc => <IncidentRow key={inc.incident_id} incident={inc} />)
-              )}
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button onClick={() => navigate('/incidents')} className="btn-primary text-xs py-1 px-3">
+                Open incident <ArrowRight className="w-3 h-3" />
+              </button>
+              <button onClick={() => setDismissedToastId(newestCritical.incident_id)} className="p-1 text-ink-faint hover:text-ink">
+                <X className="w-3.5 h-3.5" />
+              </button>
             </div>
           </div>
+        )}
+      </div>
 
-          {/* Type breakdown + Map */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <div className="card">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">By Type (24h)</p>
-              <div className="space-y-3">
-                {Object.entries(TYPE_META).map(([type, { label, color, Icon }]) => {
-                  const count = typeCounts[type] || 0
-                  const pct = incidents.length > 0 ? (count / incidents.length) * 100 : 0
-                  return (
-                    <div key={type} className="flex items-center gap-3">
-                      <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
-                        style={{ background: `${color}15` }}>
-                        <Icon className="w-3.5 h-3.5" style={{ color }} />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex justify-between text-xs mb-1">
-                          <span className="text-slate-400">{label}</span>
-                          <span className="text-slate-500 font-mono">{count}</span>
-                        </div>
-                        <div className="h-1 bg-[#1a2540] rounded-full overflow-hidden">
-                          <div className="h-full rounded-full transition-all duration-500"
-                            style={{ width: `${pct}%`, background: color }} />
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
+      {/* Detection stream + Model health */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div className="xl:col-span-2 card">
+          <p className="text-sm font-display font-semibold text-ink mb-4">Detection stream <span className="text-ink-faint font-sans font-normal text-xs">· last 60 min</span></p>
+          <div className="space-y-3">
+            {swimlanes.map(lane => (
+              <div key={lane.key} className="flex items-center gap-3">
+                <span className="w-16 text-xs text-ink-muted flex-shrink-0">{lane.label}</span>
+                <div className="flex-1 h-7 relative bg-ground rounded border border-ground-line overflow-hidden">
+                  {lane.ticks.map(t => (
+                    <div
+                      key={t.id}
+                      title={`${formatConfidence(t.confidence)} confidence`}
+                      className="absolute bottom-0 w-[2px] rounded-t-sm"
+                      style={{
+                        left: `${(1 - t.ageFrac) * 100}%`,
+                        height: `${t.confidence == null ? 15 : Math.max(15, t.confidence * 100)}%`,
+                        background: SEVERITY_HEX[t.severity] || '#5B9BFF',
+                      }}
+                    />
+                  ))}
+                </div>
+                <span className="w-6 text-right text-xs font-mono text-ink-faint flex-shrink-0">{lane.count}</span>
               </div>
-            </div>
-            <MiniMap heatmap={heatmap} incidents={incidents.slice(0, 20)} />
+            ))}
           </div>
         </div>
 
-        {/* Right: Charts + Severity */}
-        <div className="space-y-5">
-
-          {/* Trend Chart */}
-          <div className="card">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">Incident Trend (24h)</p>
-            <div className="h-52">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="gTotal" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor="#34d399" stopOpacity={0.25} />
-                      <stop offset="95%" stopColor="#34d399" stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="gViolence" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor="#f87171" stopOpacity={0.2} />
-                      <stop offset="95%" stopColor="#f87171" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1a2540" vertical={false} />
-                  <XAxis dataKey="time" stroke="#334155" fontSize={10} tickLine={false} axisLine={false} />
-                  <YAxis stroke="#334155" fontSize={10} tickLine={false} axisLine={false} />
-                  <Tooltip
-                    contentStyle={{ background: '#0d1526', border: '1px solid #1a2540', borderRadius: 8, fontSize: 12 }}
-                    labelStyle={{ color: '#94a3b8' }}
-                    itemStyle={{ color: '#e2e8f4' }}
-                  />
-                  <Area type="monotone" dataKey="total"    stroke="#34d399" strokeWidth={2} fill="url(#gTotal)" />
-                  <Area type="monotone" dataKey="violence" stroke="#f87171" strokeWidth={1.5} fill="url(#gViolence)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* Severity */}
-          <div className="card">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">Severity Breakdown</p>
-            <div className="space-y-3">
-              {SEVERITY_ORDER.map(sev => {
-                const count = severityCounts[sev] || 0
-                const pct = incidents.length > 0 ? (count / incidents.length) * 100 : 0
-                const color = SEVERITY_COLORS[sev]
-                return (
-                  <div key={sev} className="flex items-center gap-3">
-                    <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
-                      style={{ background: `${color}15` }}>
-                      <span className="w-2 h-2 rounded-full" style={{ background: color }} />
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex justify-between text-xs mb-1">
-                        <span className="text-slate-400 capitalize">{sev}</span>
-                        <span className="text-slate-500 font-mono">{count}</span>
-                      </div>
-                      <div className="h-1 bg-[#1a2540] rounded-full overflow-hidden">
-                        <div className="h-full rounded-full transition-all duration-500"
-                          style={{ width: `${pct}%`, background: color }} />
-                      </div>
-                    </div>
+        <div className="card">
+          <p className="text-sm font-display font-semibold text-ink mb-4">Model health</p>
+          <div className="space-y-2.5">
+            {Object.entries(systemHealth?.detection_models_loaded || {}).map(([key, info]) => {
+              const healthy = info.loaded
+              return (
+                <div key={key} className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className={classNames('w-1.5 h-1.5 rounded-full flex-shrink-0', healthy ? 'bg-success' : 'bg-sev-high')} />
+                    <span className="text-ink truncate">{info.model || key}</span>
                   </div>
-                )
-              })}
-            </div>
-          </div>
-
-          {/* System Health */}
-          <div className="card">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4">System Health</p>
-            <div className="space-y-2.5">
-              {[
-                { label: 'Detection Pipeline', value: 'Active',      ok: true },
-                { label: 'API Server',          value: 'Running',    ok: true },
-                { label: 'Alert Delivery',      value: 'Operational',ok: true },
-                { label: 'Evidence Storage',    value: 'Ready',      ok: true },
-              ].map(({ label, value, ok }) => (
-                <div key={label} className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className={`w-1.5 h-1.5 rounded-full ${ok ? 'bg-emerald-400' : 'bg-red-400'}`} />
-                    <span className="text-xs text-slate-400">{label}</span>
-                  </div>
-                  <span className={`text-xs font-medium ${ok ? 'text-emerald-400' : 'text-red-400'}`}>{value}</span>
+                  <span className="font-mono text-ink-faint flex-shrink-0">
+                    {healthy ? 'loaded' : 'not loaded'}
+                  </span>
                 </div>
-              ))}
-            </div>
+              )
+            })}
+            {!systemHealth && <p className="text-xs text-ink-faint">Loading system health…</p>}
           </div>
         </div>
       </div>
-    </div>
-  )
-}
-
-function KpiCard({ label, value, icon: Icon, color, sub }) {
-  return (
-    <div className="card-sm relative overflow-hidden">
-      <div className="absolute top-0 right-0 w-16 h-16 rounded-full opacity-5 -translate-y-4 translate-x-4"
-        style={{ background: color }} />
-      <div className="flex items-start justify-between mb-3">
-        <div className="w-8 h-8 rounded-lg flex items-center justify-center"
-          style={{ background: `${color}15` }}>
-          <Icon className="w-4 h-4" style={{ color }} />
-        </div>
-      </div>
-      <p className="text-2xl font-bold text-slate-100">{value}</p>
-      <p className="text-xs font-medium text-slate-400 mt-0.5">{label}</p>
-      <p className="text-[10px] text-slate-600 mt-0.5">{sub}</p>
-    </div>
-  )
-}
-
-const TYPE_COLORS_MAP = {
-  violence: '#f87171', fall: '#fbbf24', women_safety: '#60a5fa',
-  snatch: '#a78bfa', fire: '#fb923c', crash: '#f97316', other: '#94a3b8',
-}
-const SEV_COLORS = { critical: '#f87171', high: '#fb923c', medium: '#60a5fa', low: '#94a3b8' }
-
-function IncidentRow({ incident }) {
-  const color = TYPE_COLORS_MAP[incident.incident_type] || '#94a3b8'
-  const sevColor = SEV_COLORS[incident.severity] || '#94a3b8'
-  return (
-    <div className="flex items-center gap-3 px-5 py-3 hover:bg-white/[0.02] transition-colors">
-      <div className="w-1.5 h-8 rounded-full flex-shrink-0" style={{ background: sevColor }} />
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-slate-200 capitalize">
-            {incident.incident_type.replace('_', ' ')}
-          </span>
-          <span className="text-[10px] px-1.5 py-0.5 rounded font-medium capitalize"
-            style={{ color: sevColor, background: `${sevColor}15` }}>
-            {incident.severity}
-          </span>
-        </div>
-        <div className="flex items-center gap-3 mt-0.5">
-          <span className="text-xs text-slate-600 flex items-center gap-1">
-            <MapPin className="w-3 h-3" />{incident.location?.address || 'Unknown'}
-          </span>
-          <span className="text-xs text-slate-600 flex items-center gap-1">
-            <Clock className="w-3 h-3" />{formatRelativeTime(incident.timestamp)}
-          </span>
-        </div>
-      </div>
-      <span className="text-xs font-mono text-slate-600">{formatConfidence(incident.confidence)}</span>
     </div>
   )
 }

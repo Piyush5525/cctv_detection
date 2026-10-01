@@ -129,14 +129,36 @@ class EvidenceService:
         }
 
     def list_clips(self) -> List[dict]:
+        """Lists saved evidence videos with their real thumbnail filename.
+        Video names vary by how they were created -- a live-camera clip is
+        "{incident_id}_{timestamp}.mp4" (save_evidence_clip) and an uploaded
+        video is "{incident_id}_upload.mp4" (save_uploaded_media) -- but the
+        thumbnail is always "{incident_id}_thumb.jpg" either way, so we
+        can't derive it by string-trimming the video filename (a prior
+        version of the frontend tried exactly that and got a filename that
+        never existed). Report the actual thumbnail name only when that
+        file is really on disk."""
         clips = []
         for f in self.clips_dir.glob("*.mp4"):
             stat = f.stat()
+            incident_id = f.stem
+            if incident_id.endswith("_upload"):
+                incident_id = incident_id[: -len("_upload")]
+            else:
+                # live-camera clips: "{incident_id}_{YYYYMMDD_HHMMSS}"
+                parts = incident_id.rsplit("_", 2)
+                if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+                    incident_id = parts[0]
+
+            thumb_name = f"{incident_id}_thumb.jpg"
+            has_thumb = (self.clips_dir / thumb_name).exists()
+
             clips.append({
                 "filename": f.name,
                 "path": str(f),
                 "size": stat.st_size,
-                "created": datetime.fromtimestamp(stat.st_ctime).isoformat()
+                "created": datetime.fromtimestamp(stat.st_ctime).isoformat(),
+                "thumbnail_filename": thumb_name if has_thumb else None,
             })
         return sorted(clips, key=lambda x: x["created"], reverse=True)
 
@@ -145,6 +167,32 @@ class EvidenceService:
         if path.exists():
             return path
         return None
+
+    def save_uploaded_media(
+        self,
+        incident_id: str,
+        frame: np.ndarray,
+        raw_video_bytes: Optional[bytes] = None,
+    ) -> dict:
+        """Save evidence for an uploaded photo/video (as opposed to a clip cut
+        from a live camera's rolling buffer): the detected frame always
+        becomes the thumbnail, and if the upload was a video, the original
+        file bytes are stored as-is so the operator can review the full
+        source clip, not just the one frame that triggered detection."""
+        thumb_filename = f"{incident_id}_thumb.jpg"
+        thumb_path = self.clips_dir / thumb_filename
+        cv2.imwrite(str(thumb_path), frame)
+
+        video_path = None
+        if raw_video_bytes is not None:
+            video_filename = f"{incident_id}_upload.mp4"
+            video_path = self.clips_dir / video_filename
+            video_path.write_bytes(raw_video_bytes)
+
+        return {
+            "video_path": str(video_path) if video_path else None,
+            "thumbnail_path": str(thumb_path),
+        }
 
 
 evidence_service = EvidenceService()

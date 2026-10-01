@@ -129,8 +129,8 @@ def map_detection_to_incident(
     timestamp: datetime,
     camera_id: str = "CAM-001",
     location_name: str = "MI Road, Jaipur",
-    latitude: float = 26.9124,
-    longitude: float = 75.7873,
+    latitude: float = None,
+    longitude: float = None,
     detection_data: Dict[str, Any] = None,
     evidence_clip_path: str = None,
     thumbnail_path: str = None,
@@ -165,7 +165,7 @@ def map_detection_to_incident(
         location={
             "latitude": latitude,
             "longitude": longitude,
-            "address": location_name,
+            "address": location_name if latitude is not None and longitude is not None else f"{location_name} (location unknown)",
             "camera_id": camera_id,
         },
         detection_data=detection_data or {},
@@ -180,8 +180,8 @@ def create_incident_from_detection(
     detection_type: str,
     camera_id: str = "CAM-001",
     location_name: str = "MI Road, Jaipur",
-    latitude: float = 26.9124,
-    longitude: float = 75.7873,
+    latitude: float = None,
+    longitude: float = None,
     timestamp: datetime = None,
 ) -> Optional[IncidentPayload]:
     if timestamp is None:
