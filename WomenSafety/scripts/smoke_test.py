@@ -42,7 +42,15 @@ def mask_phone(number):
     return f"***{digits[-2:]}" if len(digits) >= 2 else "(unset)"
 
 
-def smoke_telegram(timeout_s=60):
+def _redact(value):
+    text = str(value)
+    return f"<id:{len(text)}ch ...{text[-2:]}>" if text else "<none>"
+
+
+def smoke_telegram(timeout_s=120):
+    """Poller starts BEFORE the send. We poll getUpdates ourselves (so every
+    update can be logged), request allowed_updates=[callback_query, message],
+    answer any accepted press immediately and edit the message to show it."""
     token, chat_id = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
     if not token:
         return report("telegram", False, "TELEGRAM_BOT_TOKEN is unset")
@@ -50,46 +58,116 @@ def smoke_telegram(timeout_s=60):
     if not gate.allowed:
         return report("telegram", False, f"blocked by safety_guard: {gate.reason}")
     import telebot
+    import time
     bot = telebot.TeleBot(token)
     run_id = uuid.uuid4().hex[:8]
+    allowed = ["callback_query", "message"]
+    try:
+        hook = bot.get_webhook_info()
+        print(f"  webhook set: {bool(getattr(hook, 'url', ''))} (a webhook would block getUpdates)")
+        offset = None
+        pending = bot.get_updates(offset=-1, timeout=0, allowed_updates=allowed)  # skip stale updates
+        if pending:
+            offset = pending[-1].update_id + 1
+    except Exception as exc:
+        return report("telegram poller start", False, f"{type(exc).__name__}: {str(exc)[:120]}")
+    log, state = [], {"count": 0, "accepted": None, "msg_id": None, "has_photo": True}
+    stop, ready = threading.Event(), threading.Event()
+
+    def poll():
+        nonlocal offset
+        ready.set()
+        while not stop.is_set():
+            try:
+                updates = bot.get_updates(offset=offset, timeout=5, allowed_updates=allowed)
+            except Exception as exc:
+                print(f"  [poll error] {type(exc).__name__}: {str(exc)[:100]}")
+                stop.wait(2)
+                continue
+            for update in updates:
+                offset = update.update_id + 1
+                state["count"] += 1
+                cq = update.callback_query
+                if cq is None:
+                    kind = "message" if update.message else "other"
+                    entry = f"update#{state['count']} type={kind} accepted=no (not a callback_query)"
+                else:
+                    data = str(cq.data or "")
+                    from_chat = getattr(getattr(getattr(cq, "message", None), "chat", None), "id", None)
+                    if not data.startswith(f"smoke:{run_id}:"):
+                        reason = "callback data is not from this smoke run"
+                        ok = False
+                    elif str(from_chat) != str(chat_id):
+                        reason, ok = "press came from a chat other than the allowlisted one", False
+                    else:
+                        reason, ok = "matches this run and the allowlisted chat", True
+                    entry = f"update#{state['count']} type=callback_query data={data.rsplit(':', 1)[-1]!r} chat={_redact(from_chat)} accepted={'yes' if ok else 'no'} ({reason})"
+                    # answer immediately, for any press, so the spinner stops
+                    try:
+                        bot.answer_callback_query(cq.id, f"Smoke test received: {data.rsplit(':', 1)[-1]}" if ok else "Not a smoke-test button")
+                    except Exception as exc:
+                        entry += f" [answerCallbackQuery failed: {type(exc).__name__}]"
+                    if ok and state["accepted"] is None:
+                        state["accepted"] = data.rsplit(":", 1)[-1]
+                        stop.set()
+                        try:
+                            text = f"SMOKE TEST: button press received -> {state['accepted']} at {time.strftime('%H:%M:%S')}"
+                            if cq.message is not None and getattr(cq.message, "photo", None):
+                                bot.edit_message_caption(text, chat_id=chat_id, message_id=cq.message.message_id)
+                            elif cq.message is not None:
+                                bot.edit_message_text(text, chat_id=chat_id, message_id=cq.message.message_id)
+                        except Exception as exc:
+                            entry += f" [edit failed: {type(exc).__name__}]"
+                log.append(entry)
+                print("  " + entry, flush=True)
+
+    poller = threading.Thread(target=poll, daemon=True)
+    poller.start()
+    ready.wait(5)
     markup = telebot.types.InlineKeyboardMarkup()
     markup.row(telebot.types.InlineKeyboardButton("Acknowledge (stops auto-call)", callback_data=f"smoke:{run_id}:acknowledge"),
                telebot.types.InlineKeyboardButton("False alarm", callback_data=f"smoke:{run_id}:false_alarm"))
     markup.row(telebot.types.InlineKeyboardButton("Escalate now", callback_data=f"smoke:{run_id}:escalate"))
     caption = ("SMOKE TEST (not a real incident)\nCamera: smoke-test\nPlace: n/a\n"
-               "Press any button within 60 s to verify the callback path.")
-    got = {}
-    done = threading.Event()
-
-    @bot.callback_query_handler(func=lambda call: str(getattr(call, "data", "")).startswith(f"smoke:{run_id}:"))
-    def _cb(call):
-        got["action"] = str(call.data).split(":")[-1]
-        try:
-            bot.answer_callback_query(call.id, f"Smoke test received: {got['action']}")
-        except Exception:
-            pass
-        done.set()
-
+               "Press any button within 120 s to verify the callback path.")
     try:
         with open(PHOTO, "rb") as photo:
             bot.send_photo(chat_id, photo, caption=caption, reply_markup=markup)
         camera = get_camera("CAM-SAMPLE-001")
         bot.send_location(chat_id, camera.latitude, camera.longitude)
     except Exception as exc:
+        stop.set()
         detail = type(exc).__name__ + (f" (HTTP {getattr(exc, 'error_code', '?')})" if hasattr(exc, "error_code") else "")
         return report("telegram send", False, detail)
     report("telegram send", True, "photo + location pin + buttons delivered")
-    print("  waiting up to 60 s for a button press ...")
-    threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True, timeout=10, long_polling_timeout=10), daemon=True).start()
-    done.wait(timeout_s)
+    print(f"  SENT at {time.strftime('%H:%M:%S')}; poller running for up to {timeout_s} s ...", flush=True)
+    stop.wait(timeout_s)
+    stop.set()
+    poller.join(8)
+    print(f"  raw update count received: {state['count']}")
+    if state["accepted"]:
+        report("telegram callback", True, f"button press received: {state['accepted']}")
+    else:
+        report("telegram callback", False, f"no accepted button press in {timeout_s} s; raw updates seen: {state['count']}")
+
+
+def smoke_call_message():
+    """Same text builder as a real call, fed with a fake fire at CAM-SAMPLE-001
+    and the nearest cached services (no network, no discovered numbers)."""
+    import json
+    from api.services.notification_service import build_call_message
+    camera = get_camera("CAM-SAMPLE-001")
+    plan = {"assignments": []}
     try:
-        bot.stop_polling()
+        cached = json.loads(settings.NEARBY_SERVICES_CACHE_PATH.read_text(encoding="utf-8")).get(camera.camera_id, {}).get("services", {})
+        for cat in ("fire", "hospital", "police"):
+            if cached.get(cat):
+                plan["assignments"].append({"service_category": cat, "status": "available",
+                                            "service": min(cached[cat], key=lambda x: x.get("distance_km", 1e9))})
     except Exception:
         pass
-    if "action" in got:
-        report("telegram callback", True, f"button press received: {got['action']}")
-    else:
-        report("telegram callback", False, "no button press within 60 s (or another process is polling this bot token: stop the API and retry)")
+    incident = {"category": "fire", "camera_name": camera.name, "place_text": camera.place_text}
+    return build_call_message(incident, plan)
 
 
 def smoke_call():
@@ -102,8 +180,7 @@ def smoke_call():
         return report("call", False, "OMNIDIM_API_KEY / OMNIDIM_AGENT_ID unset")
     import requests
     from api.services.notification_service import CALL_DISPATCH_URL
-    payload = {"agent_id": int(agent_id), "to_number": phone,
-               "call_context": {"alert_message": "This is a smoke test call from the incident dashboard. No real incident."}}
+    payload = {"agent_id": int(agent_id), "to_number": phone, "call_context": {"alert_message": smoke_call_message()}}
     if os.environ.get("OMNIDIM_FROM_NUMBER_ID"):
         payload["from_number_id"] = int(os.environ["OMNIDIM_FROM_NUMBER_ID"])
     try:

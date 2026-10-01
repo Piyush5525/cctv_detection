@@ -1,0 +1,158 @@
+{
+  "CAM-SAMPLE-001": {
+    "cached_at": "2026-10-01T11:57:46.355829+00:00",
+    "services": {
+      "hospital": [
+        {
+          "title": "SR Kalla Hospital Jaipur",
+          "category": "hospital",
+          "type": "Private hospital",
+          "address": "78-79 Dhuleshwar garden, Sardar Patel Marg, C Scheme, Jaipur, Rajasthan 302006, India",
+          "phone": "+91 70230 07777",
+          "rating": 4.1,
+          "open_state": "Open 24 hours",
+          "gps_coordinates": {
+            "latitude": 26.913222299999997,
+            "longitude": 75.7970955
+          },
+          "place_id": "ChIJKXwKvq22bTkRUANJr2OZe9o",
+          "distance_km": 0.98,
+          "type_looks_correct": true
+        },
+        {
+          "title": "Bani Park Hospital",
+          "category": "hospital",
+          "type": "Hospital",
+          "address": "D-9, Kabir Marg, Sen Colony, Bani Park, Jaipur, Jaipur Nagar Nigam Area, Rajasthan 302006, India",
+          "phone": "+91 141 220 3864",
+          "rating": 4.6,
+          "open_state": "Open 24 hours",
+          "gps_coordinates": {
+            "latitude": 26.924455199999997,
+            "longitude": 75.7881708
+          },
+          "place_id": "ChIJP-6GQPGzbTkRmD0TW3k9a7g",
+          "distance_km": 1.34,
+          "type_looks_correct": true
+        },
+        {
+          "title": "Apollo Spectra Hospitals - Jaipur",
+          "category": "hospital",
+          "type": "Hospital",
+          "address": "Plot No.5, Sahakar Marg, near Rajasthan Vidhan Sabha, Vidhayak Nagar, Lalkothi, Jaipur, Jaipur Nagar Nigam Area, Rajasthan 302015, India",
+          "phone": "+91 40 6914 6071",
+          "rating": 4.7,
+          "open_state": "Open 24 hours",
+          "gps_coordinates": {
+            "latitude": 26.8926834,
+            "longitude": 75.7950627
+          },
+          "place_id": "ChIJbfbTbPZwOyURMlKzIVANKoc",
+          "distance_km": 2.32,
+          "type_looks_correct": true
+        }
+      ],
+      "police": [
+        {
+          "title": "Police Station",
+          "category": "police",
+          "type": "Police station",
+          "address": "WQ5R+J2C, Jamnalal Bajaj Marg, Madrampur, Civil Lines, Jaipur, Jaipur Nagar Nigam Area, Rajasthan 302006, India",
+          "phone": null,
+          "rating": null,
+          "open_state": null,
+          "gps_coordinates": {
+            "latitude": 26.909062199999997,
+            "longitude": 75.79002919999999
+          },
+          "place_id": "ChIJ244Iew60bTkRoPya2_-C4Ic",
+          "distance_km": 0.46,
+          "type_looks_correct": true
+        },
+        {
+          "title": "G R P Police Station Jaipur",
+          "category": "police",
+          "type": "Police department",
+          "address": "WQ9Q+9RR, Khasa Khoti Bridge, Station Road, Hasanpura Rd, Gopalbari, Jaipur, Rajasthan 302016, India",
+          "phone": "+91 141 237 5500",
+          "rating": null,
+          "open_state": null,
+          "gps_coordinates": {
+            "latitude": 26.918480499999998,
+            "longitude": 75.7895269
+          },
+          "place_id": "ChIJR9wS0vWzbTkRM01ICGk-pQQ",
+          "distance_km": 0.71,
+          "type_looks_correct": true
+        },
+        {
+          "title": "Sadar Police Station",
+          "category": "police",
+          "type": "Police station",
+          "address": "WQCR+73J, Station Rd, Opposite Railway Station, Barodia Scheme, Gopalbari, Jaipur, Jaipur Nagar Nigam Area, Rajasthan 302006, India",
+          "phone": "+91 141 220 2677",
+          "rating": null,
+          "open_state": "Open 24 hours",
+          "gps_coordinates": {
+            "latitude": 26.9207143,
+            "longitude": 75.79014459999999
+          },
+          "place_id": "ChIJhaa9fPazbTkRFfSFPMcBfzo",
+          "distance_km": 0.97,
+          "type_looks_correct": true
+        }
+      ],
+      "fire": [
+        {
+          "title": "Rajasthan Agnishaman Seva",
+          "category": "fire",
+          "type": "Fire station",
+          "address": "WR92+7V2, Mirza Ismail Rd, Jalupura, Jaipur, Jaipur Nagar Nigam Area, Rajasthan 302001, India",
+          "phone": "+91 141 237 5925",
+          "rating": 4.9,
+          "open_state": "Open 24 hours",
+          "gps_coordinates": {
+            "latitude": 26.9181451,
+            "longitude": 75.8021534
+          },
+          "place_id": "ChIJ0d4W5gC0bTkRRmeWIDd2MLQ",
+          "distance_km": 1.61,
+          "type_looks_correct": true
+        },
+        {
+          "title": "Fire Fighting Plant",
+          "category": "fire",
+          "type": "Fire station",
+          "address": "WR32+C95, C Scheme, Ashok Nagar, Jaipur, Jaipur Nagar Nigam Area, Rajasthan 302005, India",
+          "phone": null,
+          "rating": 5,
+          "open_state": null,
+          "gps_coordinates": {
+            "latitude": 26.9035215,
+            "longitude": 75.8009798
+          },
+          "place_id": "ChIJ9wj31L21bTkRunKnvk85iL0",
+          "distance_km": 1.68,
+          "type_looks_correct": true
+        },
+        {
+          "title": "SHRI SHYAM FIRE ENTERPRISES",
+          "category": "fire",
+          "type": "Fire station",
+          "address": "VQWP+VH2, fire station, Hawa Sadak, Sharma Colony, Bais Godam, Jaipur, Jaipur Nagar Nigam Area, Rajasthan 302017, India",
+          "phone": "+91 76158 29999",
+          "rating": 5,
+          "open_state": "Open 24 hours",
+          "gps_coordinates": {
+            "latitude": 26.8971351,
+            "longitude": 75.7863962
+          },
+          "place_id": "ChIJXXZjfg21bTkRPOSqO8BBwPw",
+          "distance_km": 1.7,
+          "type_looks_correct": true
+        }
+      ]
+    },
+    "errors": null
+  }
+}

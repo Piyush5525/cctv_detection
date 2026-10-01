@@ -24,6 +24,23 @@ from api.services.safety_guard import alerts_enabled_check, check_call_allowed, 
 CALL_DISPATCH_URL = "https://omnidim.io/api/v1/calls/dispatch"
 
 
+def build_call_message(incident: dict, plan: Optional[dict]) -> str:
+    """Text the Omnidim agent speaks ([alert_message]): demo prefix (DEMO_MODE),
+    category, place, and the nearest services from the dispatch plan. Only names
+    and distances are spoken, never discovered phone numbers."""
+    category = str(incident.get("category", "incident")).replace("_", " ")
+    place = ", ".join(x for x in (incident.get("camera_name"), incident.get("place_text")) if x)
+    nearest = []
+    for item in (plan or {}).get("assignments", []):
+        service = item.get("service") or {}
+        if item.get("status") == "available" and service.get("title"):
+            nearest.append(f"{item.get('service_category')}: {service['title']}, {service.get('distance_km', '?')} kilometres")
+    services = "; ".join(nearest) if nearest else "nearest services unavailable"
+    body = f"{category} detected at {place}. Nearest services: {services}."
+    prefix = settings.CALL_MESSAGE_PREFIX.strip() if settings.DEMO_MODE else ""
+    return f"{prefix} {body}".strip()
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -283,7 +300,7 @@ class NotificationService:
             self._record(incident_id, "call", "failed", "configured demo phone", "missing OMNIDIM_API_KEY or OMNIDIM_AGENT_ID")
             return
         payload = {"agent_id": int(agent_id), "to_number": phone,
-                   "call_context": {"alert_message": f"{incident['category']} at {incident['camera_name']}"}}
+                   "call_context": {"alert_message": build_call_message(incident, current.get("dispatch_plan"))}}
         from_number_id = os.environ.get("OMNIDIM_FROM_NUMBER_ID")
         if from_number_id:
             payload["from_number_id"] = int(from_number_id)

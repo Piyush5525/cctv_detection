@@ -192,6 +192,8 @@ class Settings(BaseSettings):
     DEMO_COOLDOWN_S: float = 15.0  # used instead of NOTIFICATION_COOLDOWN_S when DEMO_MODE=true (outbound only)
     NOTIFICATION_COOLDOWN_S: float = 120.0  # at most one alert per camera+category per this many seconds
     MAX_CALLS_PER_HOUR: int = 5
+    # Spoken first on every call while DEMO_MODE=true so the recipient knows it is a demo.
+    CALL_MESSAGE_PREFIX: str = "This is a test call for the Room 118 demo."
     NOTIFICATION_QUEUE_MAX_SIZE: int = 50
     NOTIFICATION_MAX_RETRIES: int = 3
     NOTIFICATION_RETRY_BACKOFF_S: float = 2.0

@@ -68,7 +68,8 @@ def send_call_alert(message: str, reason: str = "general"):
         # Key name must exactly match the [variable] used in the agent's
         # welcome message on the OmniDimension dashboard, e.g. [alert_message].
         "call_context": {
-            "alert_message": message,
+            # Fix pass: demo prefix while DEMO_MODE (legacy path has no place/services text).
+            "alert_message": (f"{settings.CALL_MESSAGE_PREFIX.strip()} {message}" if settings.DEMO_MODE else message),
         },
     }
     if OMNIDIM_FROM_NUMBER_ID:
