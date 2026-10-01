@@ -7,14 +7,22 @@ from pathlib import Path
 import os
 
 from api.core.config import settings
-from api.routes import incidents_v2, evidence, system, detect, emergency, map as map_routes
+from api.routes import incidents_v2, evidence, system, detect, emergency, map as map_routes, nearby_services, cameras
 from api import db as db_v2
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db_v2.init_db()
-    yield
+    from api.services.notification_service import notification_service
+    from api.services.camera_workers import camera_workers
+    notification_service.start(start_polling=True)
+    camera_workers.start()
+    try:
+        yield
+    finally:
+        camera_workers.stop()
+        notification_service.stop()
 
 
 app = FastAPI(
@@ -40,6 +48,9 @@ app.include_router(system.router, prefix=settings.API_V1_STR)
 app.include_router(detect.router, prefix=settings.API_V1_STR)
 app.include_router(emergency.router, prefix=settings.API_V1_STR)
 app.include_router(map_routes.router, prefix=settings.API_V1_STR)
+app.include_router(nearby_services.router, prefix=settings.API_V1_STR)
+app.include_router(cameras.router, prefix=settings.API_V1_STR)
+app.include_router(cameras.demo_router, prefix=settings.API_V1_STR)
 
 frontend_build = Path(__file__).parent.parent / "frontend" / "build"
 if frontend_build.exists():

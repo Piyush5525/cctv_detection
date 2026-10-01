@@ -160,6 +160,11 @@ def handle_finished_event(camera_id: str, ev: ActiveEvent, evidence_raw: dict, s
         incident.status.value, incident.source.value, incident.event_start.isoformat(),
         incident.to_dict(),
     )
+    # Dispatch work (SerpApi/Mapbox/Telegram) is deliberately queued only
+    # after the durable incident insert.  The encoder thread never waits on
+    # network I/O and every notification update has a real incident to edit.
+    from api.services.notification_service import notification_service
+    notification_service.enqueue(incident)
     print(f"[IncidentService] INCIDENT CREATED {incident.incident_id} camera={camera_id} "
           f"category={incident.category.value} peak_conf={peak_conf:.2f}")
     return incident
@@ -218,6 +223,21 @@ def update_status(incident_id: str, update: IncidentStatusUpdate) -> Optional[di
     data["updated_at"] = utcnow().isoformat()
     db.update_incident_data(incident_id, update.status.value, data)
     return data
+
+
+def append_notification(incident_id: str, record: dict) -> Optional[dict]:
+    """Append one delivery-timeline item atomically to an existing incident."""
+    def mutate(data):
+        data.setdefault("notifications", []).append(record)
+        data["updated_at"] = utcnow().isoformat()
+    return db.mutate_incident_data(incident_id, mutate)
+
+
+def set_dispatch_plan(incident_id: str, plan: dict) -> Optional[dict]:
+    def mutate(data):
+        data["dispatch_plan"] = plan
+        data["updated_at"] = utcnow().isoformat()
+    return db.mutate_incident_data(incident_id, mutate)
 
 
 def list_quarantine() -> list[dict]:

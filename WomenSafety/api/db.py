@@ -108,6 +108,25 @@ def update_incident_data(incident_id: str, status: str, data: dict) -> bool:
         return cur.rowcount > 0
 
 
+def mutate_incident_data(incident_id: str, mutate) -> Optional[dict]:
+    """Apply a small JSON mutation under the same write lock as SQLite.
+
+    Notification-worker and timer threads can update one incident at almost
+    the same moment.  Keeping their read/modify/write operation together
+    prevents one timeline entry or dispatch-plan update from overwriting the
+    other.
+    """
+    with _write() as conn:
+        row = conn.execute("SELECT data FROM incidents WHERE incident_id = ?", (incident_id,)).fetchone()
+        if row is None:
+            return None
+        data = json.loads(row["data"])
+        mutate(data)
+        conn.execute("UPDATE incidents SET status = ?, data = ? WHERE incident_id = ?",
+                     (data["status"], json.dumps(data), incident_id))
+        return data
+
+
 def get_incident(incident_id: str) -> Optional[dict]:
     with _connect() as conn:
         row = conn.execute("SELECT data FROM incidents WHERE incident_id = ?", (incident_id,)).fetchone()

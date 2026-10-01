@@ -4,6 +4,7 @@ import cv2
 import time
 
 from api.core.config import settings
+from api.services.safety_guard import check_telegram_allowed
 
 # Initialize the Telegram bot
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -36,6 +37,17 @@ def send_telegram_alert(frame, message, reason: str = "general"):
 
     if not bot or not CHAT_ID:
         print("Telegram alert skipped: missing TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID env vars.")
+        return
+
+    # Dispatch Backend phase: same safety layer the new notification
+    # service uses. For Telegram this only matters once a future feature
+    # might add more recipients than the single configured CHAT_ID --
+    # today it is a no-op in practice (TELEGRAM_CHAT_ID_ALLOWLIST
+    # defaults to CHAT_ID itself when unset), kept for consistency with
+    # the call path and so both channels are provably on the same rail.
+    safety = check_telegram_allowed(CHAT_ID)
+    if not safety.allowed:
+        print(f"[Telebot_Alert] message BLOCKED by safety_guard: {safety.reason}")
         return
 
     current_time = time.time()

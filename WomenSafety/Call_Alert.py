@@ -3,6 +3,7 @@ import time
 import requests
 
 from api.core.config import settings
+from api.services.safety_guard import check_call_allowed
 
 # --- Configuration (all values come from environment variables) ---
 # OMNIDIM_API_KEY      -> from https://omnidim.io/api-management
@@ -38,6 +39,17 @@ def send_call_alert(message: str, reason: str = "general"):
 
     if not all([OMNIDIM_API_KEY, OMNIDIM_AGENT_ID, ALERT_PHONE_NUMBER]):
         print("Call alert skipped: missing one of OMNIDIM_API_KEY / OMNIDIM_AGENT_ID / ALERT_PHONE_NUMBER env vars.")
+        return
+
+    # Dispatch Backend phase: the SAME safety layer the new notification
+    # service uses -- hard-blocks real emergency numbers (100/101/102/
+    # 108/112) regardless of DEMO_MODE, and in DEMO_MODE only allows the
+    # explicitly allowlisted recipient(s). ALERT_PHONE_NUMBER is NOT
+    # auto-allowlisted: legacy callers must set it equal to
+    # DEMO_PHONE_NUMBER or it is blocked, preventing a circular allowlist.
+    safety = check_call_allowed(ALERT_PHONE_NUMBER)
+    if not safety.allowed:
+        print(f"[Call_Alert] call BLOCKED by safety_guard: {safety.reason}")
         return
 
     current_time = time.time()

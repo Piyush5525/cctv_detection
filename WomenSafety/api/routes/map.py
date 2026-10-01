@@ -44,7 +44,9 @@ async def get_map_groups(
         page = members[offset_per_group:offset_per_group + limit_per_group]
         groups.append({
             "camera_id": camera_id,
-            "camera_name": cam.name if cam else members[0]["camera_name"],
+            "camera_name": cam.display_name if cam else members[0]["camera_name"],
+            "camera_type": cam.camera_type if cam else "cctv",
+            "location_basis": cam.location_basis if cam else "simulated_placement",
             "place_text": cam.place_text if cam else members[0]["place_text"],
             "latitude": cam.latitude if cam else members[0]["latitude"],
             "longitude": cam.longitude if cam else members[0]["longitude"],

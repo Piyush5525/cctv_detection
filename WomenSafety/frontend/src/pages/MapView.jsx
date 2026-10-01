@@ -1,647 +1,855 @@
-import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
-import MapboxMap, { Popup, Source, Layer } from 'react-map-gl/mapbox'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import Map, { Marker, Source, Layer } from 'react-map-gl/mapbox'
 import 'mapbox-gl/dist/mapbox-gl.css'
-import {
-  ZoomIn, ZoomOut, Home, Camera, Box, Square, Radio,
-} from 'lucide-react'
-import { useIncidents } from '../context/IncidentContext'
-import { useWebSocket } from '../context/WebSocketContext'
-import { classNames, formatConfidence } from '../utils/format'
-import {
-  TYPE_LABELS, SEVERITY_ORDER, SEVERITY_LABEL, SEVERITY_HEX,
-  severityChipClass, STATUS_LABEL, statusPillClass,
-} from '../utils/incidentMeta'
-import { IncidentHoverPreview } from '../components/IncidentHoverPreview'
+import toast from 'react-hot-toast'
+import api from '../utils/api'
 
-const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
+// ─── Constants ───────────────────────────────────────────────────────
+const TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
+const POLL_MS = 2000
+const SLIDE_MS = 3000
+const PREFERSREDUCEDMOTION =
+  typeof window !== 'undefined' &&
+  window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
 
-// India-wide fallback view, used only until real incident locations are
-// available to fit bounds to (incidents are no longer Jaipur-only).
-const INDIA_CENTER = { longitude: 79.0, latitude: 22.5 }
-const INDIA_DEFAULT_ZOOM = 4
+// Category → color, keeping the palette tight for projector contrast
+const CATEGORY_COLORS = {
+  fire: '#FF951F',
+  road_accident: '#FF4B3E',
+  assault: '#E74C6F',
+  snatching: '#A97BFF',
+  fall: '#FFB829',
+  women_safety: '#5B9BFF',
+  other: '#7FE3D0',
+}
 
-const INCIDENT_TYPES = ['violence', 'fall', 'women_safety', 'snatch', 'fire', 'crash', 'other']
+const categoryColor = (cat) => CATEGORY_COLORS[cat] || CATEGORY_COLORS.other
 
-const STYLE_2D = 'mapbox://styles/mapbox/dark-v11'
-const STYLE_3D = 'mapbox://styles/mapbox/standard'
+// Severity rank for sorting (higher = more severe)
+const SEVERITY_RANK = {
+  road_accident: 5,
+  fire: 4,
+  assault: 3,
+  snatching: 2,
+  women_safety: 2,
+  fall: 1,
+  other: 0,
+}
 
-function IncidentPopupCard({ incident, longitude, latitude, onClose }) {
+const categoryLabel = (cat) =>
+  (cat || 'unknown').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+
+const evidenceUrl = (incident, name) =>
+  `/api/v1/evidence/v2/${incident.camera_id}/${(incident.event_start || '').slice(0, 10)}/${incident.incident_id}/${name}`
+
+const fmtTime = (iso) => {
+  if (!iso) return '—'
+  try {
+    return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  } catch {
+    return iso
+  }
+}
+
+const fmtDateTime = (iso) => {
+  if (!iso) return '—'
+  try {
+    return new Date(iso).toLocaleString([], {
+      month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    })
+  } catch {
+    return iso
+  }
+}
+
+// Determine the "worst" category in a group's incidents
+function mostSevereCategory(incidents) {
+  if (!incidents?.length) return 'other'
+  return incidents.reduce((worst, inc) => {
+    const rank = SEVERITY_RANK[inc.category] ?? 0
+    const worstRank = SEVERITY_RANK[worst] ?? 0
+    return rank > worstRank ? inc.category : worst
+  }, incidents[0].category)
+}
+
+// ─── Hover Popup ─────────────────────────────────────────────────────
+function HoverPopup({ group, onPin }) {
+  const [idx, setIdx] = useState(0)
+  const rows = group.incidents || []
+
+  useEffect(() => {
+    if (rows.length <= 1 || PREFERSREDUCEDMOTION) return
+    const id = setInterval(() => setIdx((x) => (x + 1) % rows.length), SLIDE_MS)
+    return () => clearInterval(id)
+  }, [rows.length])
+
+  const item = rows[idx]
+
   return (
-    <Popup
-      longitude={longitude}
-      latitude={latitude}
-      onClose={onClose}
-      closeButton={true}
-      closeOnClick={false}
-      offset={16}
-      anchor="bottom"
-      className="reticle-mapbox-popup"
-    >
-      <div className="w-56 font-sans">
-        <div className="flex items-center gap-1.5 mb-1.5">
-          <span className={severityChipClass(incident.severity)}>{SEVERITY_LABEL[incident.severity]}</span>
-          <span className={statusPillClass(incident.status)}>{STATUS_LABEL[incident.status]}</span>
-        </div>
-        <p className="text-sm font-semibold text-ink mb-0.5">{TYPE_LABELS[incident.incident_type]}</p>
-        <p className="text-xs text-ink-faint mb-2">{incident.location?.camera_id} · {incident.location?.address}</p>
-        <p className="text-[11px] font-mono text-ink-faint mb-2">
-          {formatConfidence(incident.confidence)} · {new Date(incident.timestamp).toLocaleTimeString()}
-        </p>
-        <button
-          onClick={() => window.location.assign('/incidents')}
-          className="w-full text-xs font-medium bg-signal text-ground rounded-lg px-2 py-1.5"
-        >
-          Open
-        </button>
+    <div className="hover-popup" onClick={(e) => { e.stopPropagation(); onPin() }}
+         role="tooltip" aria-label={`${group.camera_name} preview`}>
+      <div className="hover-head">
+        <strong className="hover-name">{group.camera_name}</strong>
+        {group.camera_type === 'phone' && (
+          <span className="honesty-badge phone-badge">Demo phone camera</span>
+        )}
+        {group.location_basis === 'simulated_placement' && (
+          <span className="honesty-badge sim-badge">Simulated placement</span>
+        )}
       </div>
-    </Popup>
+      <span className="hover-place">{group.place_text}</span>
+      <span className="hover-count">
+        {group.count} incident{group.count !== 1 ? 's' : ''}
+      </span>
+      {item && (
+        <div className="hover-slide">
+          <img
+            src={item.thumbnail_url}
+            alt={`${categoryLabel(item.category)} evidence thumbnail`}
+            loading="lazy"
+          />
+          <div className="hover-meta">
+            <span className="hover-category" style={{ color: categoryColor(item.category) }}>
+              {categoryLabel(item.category)}
+            </span>
+            <span>{fmtTime(item.event_start)}</span>
+            <span>Conf: {(item.peak_confidence ?? 0).toFixed(2)}</span>
+          </div>
+          {/* Slide indicator dots */}
+          {rows.length > 1 && (
+            <div className="slide-dots">
+              {rows.map((_, i) => (
+                <span key={i} className={`slide-dot ${i === idx ? 'active' : ''}`} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
-function MissingTokenNotice() {
+// ─── Notification Timeline Item ──────────────────────────────────────
+function TimelineItem({ record }) {
+  const channelIcons = {
+    telegram: '📨',
+    call: '📞',
+    button: '🔘',
+    escalation: '⏫',
+  }
+  const statusColors = {
+    sent: '#7FE3D0',
+    delivered: '#7FE3D0',
+    confirmed: '#34D399',
+    false_alarm: '#FF7180',
+    cancelled: '#9CABC0',
+    failed: '#FF4B3E',
+    pending: '#FFB829',
+    escalated: '#E74C6F',
+  }
+
   return (
-    <div className="flex-1 flex items-center justify-center rounded-xl border border-ground-line bg-ground-panel">
-      <div className="max-w-sm text-center p-6">
-        <p className="text-sm font-semibold text-ink mb-2">Mapbox token missing</p>
-        <p className="text-xs text-ink-faint">
-          Set <code className="font-mono text-signal">VITE_MAPBOX_TOKEN</code> in{' '}
-          <code className="font-mono">WomenSafety/frontend/.env</code>, then restart the dev server.
-        </p>
+    <div className="timeline-item">
+      <div className="timeline-icon">{channelIcons[record.channel] || '📋'}</div>
+      <div className="timeline-content">
+        <div className="timeline-header">
+          <strong style={{ color: statusColors[record.status] || '#CBD8E8' }}>
+            {(record.channel || 'unknown').replace(/_/g, ' ')}
+          </strong>
+          <span className="timeline-status" style={{ color: statusColors[record.status] }}>
+            {record.status}
+          </span>
+        </div>
+        <span className="timeline-time">{fmtDateTime(record.at || record.sent_at || record.timestamp)}</span>
+        {record.detail && <span className="timeline-detail">{record.detail}</span>}
+        {record.error && <span className="timeline-error">⚠ {record.error}</span>}
       </div>
     </div>
   )
 }
 
-export function MapView() {
-  const { allIncidents: incidents, heatmap, analytics } = useIncidents()
-  const [selectedIncident, setSelectedIncident] = useState(null)
-  const [hoveredIncident, setHoveredIncident] = useState(null)
-  const [visibleTypes, setVisibleTypes] = useState(INCIDENT_TYPES)
-  const [showPins, setShowPins] = useState(true)
-  const [showHeatmap, setShowHeatmap] = useState(false)
-  const [showCoverage, setShowCoverage] = useState(false)
-  const [is3D, setIs3D] = useState(false)
-  const mapRef = useRef(null)
-  const hoverTimeout = useRef(null)
-  const { lastMessage } = useWebSocket()
-  const [liveFlash, setLiveFlash] = useState(null)
-  const hasFitBounds = useRef(false)
+// ─── Dispatch Assignment Card ────────────────────────────────────────
+function DispatchCard({ assignment }) {
+  const service = assignment.service
+  const route = assignment.route
+  const icons = { hospital: '🏥', police: '🚔', fire: '🚒' }
 
-  // Most real scraped news headlines never name a specific street, so those
-  // incidents only ever resolve to a city-centroid fallback coordinate. Tried
-  // spreading same-coordinate incidents into a ring around that point so all
-  // of them stayed visible, but at real map zoom levels that just reads as a
-  // huge, meaningless circle -- worse than useful. The map now only plots
-  // incidents that have a real, specific location; incidents stuck at a
-  // city centroid are real data (visible in Live Incidents / the triage
-  // queue) but aren't pinned on this map, since a city-level point isn't a
-  // real map location to visualize.
-  const filteredIncidents = useMemo(
-    () => incidents
-      .filter(i => visibleTypes.includes(i.incident_type))
-      .filter(i => !(i.location?.address || '').toLowerCase().includes('unspecified')),
-    [incidents, visibleTypes]
-  )
-
-  // Real, honest clustering instead of jitter/ring math: at this dataset's
-  // density (most incidents only resolve to a city-level coordinate, not a
-  // street address), spreading N points in a circle around one coordinate
-  // always eventually looks like a ring once N is large enough -- there's
-  // no jitter radius that fixes that, it's the wrong technique for this
-  // density. Mapbox's native supercluster-based clustering (cluster: true
-  // on the GeoJSON source below) aggregates nearby points into a single
-  // sized/counted circle at low zoom and only shows individual points once
-  // zoomed in close enough that they'd be visually distinct anyway.
-  const incidentsGeoJSON = useMemo(() => ({
-    type: 'FeatureCollection',
-    features: filteredIncidents.map(inc => ({
-      type: 'Feature',
-      properties: {
-        incident_id: inc.incident_id,
-        severity: inc.severity,
-      },
-      geometry: { type: 'Point', coordinates: [inc.location.longitude, inc.location.latitude] },
-    })),
-  }), [filteredIncidents])
-
-  const incidentById = useMemo(() => {
-    const map = new Map()
-    for (const inc of filteredIncidents) map.set(inc.incident_id, inc)
-    return map
-  }, [filteredIncidents])
-
-  const typeCounts = useMemo(() => {
-    const c = {}
-    incidents.forEach(i => { c[i.incident_type] = (c[i.incident_type] || 0) + 1 })
-    return c
-  }, [incidents])
-
-  // Camera FOV coverage as a GeoJSON circle layer rather than DOM Markers --
-  // avoids react-map-gl Marker/React reconciliation glitches when many
-  // fixed, non-interactive shapes render at once, and is cheaper to draw.
-  const cameraLocations = useMemo(() => {
-    const seen = new Map()
-    incidents.forEach(i => {
-      const cam = i.location?.camera_id
-      if (cam && !seen.has(cam)) seen.set(cam, i.location)
-    })
-    return {
-      type: 'FeatureCollection',
-      features: [...seen.values()].map(loc => ({
-        type: 'Feature',
-        geometry: { type: 'Point', coordinates: [loc.longitude, loc.latitude] },
-      })),
-    }
-  }, [incidents])
-
-  const heatmapGeoJSON = useMemo(() => ({
-    type: 'FeatureCollection',
-    features: heatmap.map(point => ({
-      type: 'Feature',
-      properties: { weight: point.weight || 1 },
-      geometry: { type: 'Point', coordinates: [point.longitude, point.latitude] },
-    })),
-  }), [heatmap])
-
-  const hotspotCameras = useMemo(() => {
-    const byCam = {}
-    incidents.forEach(i => {
-      const cam = i.location?.camera_id
-      if (!cam) return
-      byCam[cam] = byCam[cam] || {
-        cam, address: i.location?.address, total: 0,
-        sev: { critical: 0, high: 0, medium: 0, low: 0 },
-        location: i.location,
-      }
-      byCam[cam].total++
-      if (byCam[cam].sev[i.severity] !== undefined) byCam[cam].sev[i.severity]++
-    })
-    return Object.values(byCam).sort((a, b) => b.total - a.total).slice(0, 6)
-  }, [incidents])
-
-  const handleTypeToggle = (type) => {
-    setVisibleTypes(prev => prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type])
-  }
-
-  const handleZoomIn = () => mapRef.current?.zoomIn()
-  const handleZoomOut = () => mapRef.current?.zoomOut()
-
-  // Frames every located incident in one view -- with nationwide data there's
-  // no single fixed "home" city to fly back to, so Reset re-fits to whatever
-  // is actually on the map instead of a hardcoded center/zoom.
-  const fitToIncidents = useCallback((animate = true) => {
-    if (!mapRef.current || filteredIncidents.length === 0) return
-    let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity
-    for (const inc of filteredIncidents) {
-      const { longitude: lng, latitude: lat } = inc.location
-      if (lng < minLng) minLng = lng
-      if (lng > maxLng) maxLng = lng
-      if (lat < minLat) minLat = lat
-      if (lat > maxLat) maxLat = lat
-    }
-    mapRef.current.fitBounds(
-      [[minLng, minLat], [maxLng, maxLat]],
-      { padding: 80, maxZoom: 11, duration: animate ? 900 : 0, pitch: 0, bearing: 0 }
-    )
-  }, [filteredIncidents])
-
-  const handleReset = () => fitToIncidents(true)
-
-  // Auto-frame all located incidents once, the first time real data arrives
-  // -- avoids opening on a fixed Jaipur view (or a near-empty India view)
-  // when incidents span the whole country.
-  useEffect(() => {
-    if (hasFitBounds.current || filteredIncidents.length === 0) return
-    fitToIncidents(false)
-    hasFitBounds.current = true
-  }, [filteredIncidents, fitToIncidents])
-
-  const flyToCamera = useCallback((hotspot) => {
-    if (!hotspot?.location || !mapRef.current) return
-    mapRef.current.flyTo({
-      center: [hotspot.location.longitude, hotspot.location.latitude],
-      zoom: 15,
-      duration: 900,
-    })
-    const match = incidents.find(i => i.location?.camera_id === hotspot.cam)
-    if (match) setSelectedIncident(match)
-  }, [incidents])
-
-  const toggle3D = useCallback(() => {
-    setIs3D(v => {
-      const next = !v
-      if (mapRef.current) {
-        mapRef.current.easeTo({ pitch: next ? 55 : 0, bearing: next ? -17 : 0, duration: 600 })
-      }
-      return next
-    })
-  }, [])
-
-  // Auto-follow a freshly-pushed critical incident, matching the Dashboard
-  // feature-tile behavior -- the map surfaces new critical activity live
-  // instead of requiring the operator to go hunt for it.
-  useEffect(() => {
-    const incident = lastMessage?.type === 'incident_created' ? lastMessage.data : null
-    if (!incident?.location) return
-    setLiveFlash(incident)
-    const dismiss = setTimeout(() => setLiveFlash(null), 6000)
-    if (incident.severity === 'critical' && mapRef.current) {
-      mapRef.current.flyTo({
-        center: [incident.location.longitude, incident.location.latitude],
-        zoom: 14,
-        duration: 1200,
-      })
-      setSelectedIncident(incident)
-    }
-    return () => clearTimeout(dismiss)
-  }, [lastMessage])
-
-  const handleHover = (incident) => {
-    if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
-    setHoveredIncident(incident)
-  }
-  const handleLeave = () => {
-    hoverTimeout.current = setTimeout(() => setHoveredIncident(null), 120)
-  }
-
-  // Native Mapbox layers (clusters + unclustered points) aren't React
-  // elements, so their interactivity goes through the map's own click event
-  // and queryRenderedFeatures rather than per-marker onClick props. Clicking
-  // a cluster zooms in to expand it (the standard supercluster pattern);
-  // clicking an individual point opens that incident.
-  const handleMapClick = useCallback((e) => {
-    const map = mapRef.current?.getMap?.()
-    if (!map) return
-    const features = map.queryRenderedFeatures(e.point, {
-      layers: ['incident-clusters', 'incident-unclustered-point'],
-    })
-    if (features.length === 0) {
-      setSelectedIncident(null)
-      return
-    }
-    const feature = features[0]
-    if (feature.layer.id === 'incident-clusters') {
-      const clusterId = feature.properties.cluster_id
-      const source = map.getSource('incidents')
-      source.getClusterExpansionZoom(clusterId, (err, zoom) => {
-        if (err) return
-        map.easeTo({ center: feature.geometry.coordinates, zoom, duration: 500 })
-      })
-      return
-    }
-    const incident = incidentById.get(feature.properties.incident_id)
-    if (incident) setSelectedIncident(incident)
-  }, [incidentById])
-
-  // Cursor feedback + hover preview for the native point layer, since it
-  // has no per-feature onMouseEnter the way the old DOM Markers did.
-  const handleMapMouseMove = useCallback((e) => {
-    const map = mapRef.current?.getMap?.()
-    if (!map) return
-    const features = map.queryRenderedFeatures(e.point, { layers: ['incident-unclustered-point'] })
-    if (features.length > 0) {
-      map.getCanvas().style.cursor = 'pointer'
-      const incident = incidentById.get(features[0].properties.incident_id)
-      if (incident) handleHover(incident)
-    } else {
-      const clusterFeatures = map.queryRenderedFeatures(e.point, { layers: ['incident-clusters'] })
-      map.getCanvas().style.cursor = clusterFeatures.length > 0 ? 'pointer' : ''
-      handleLeave()
-    }
-  }, [incidentById])
-
-  const cameraCount = new Set(incidents.map(i => i.location?.camera_id).filter(Boolean)).size
-  const unlocatedCount = useMemo(
-    () => incidents.filter(i => (i.location?.address || '').toLowerCase().includes('unspecified')).length,
-    [incidents]
-  )
-
-  if (!MAPBOX_TOKEN) {
-    return (
-      <div className="h-[calc(100vh-6rem)] flex gap-4">
-        <MissingTokenNotice />
+  return (
+    <div className="dispatch-card">
+      <div className="dispatch-header">
+        <span className="dispatch-icon">{icons[assignment.service_category] || '🏢'}</span>
+        <strong>{(assignment.service_category || '').replace(/_/g, ' ')}</strong>
       </div>
+      {assignment.status === 'unavailable' ? (
+        <span className="dispatch-unavailable">{assignment.reason || 'Lookup unavailable'}</span>
+      ) : service ? (
+        <>
+          <span className="dispatch-name">{service.title || service.name || 'Unknown'}</span>
+          <span className="dispatch-phone">{service.phone || 'No phone listed'}</span>
+          {route && (
+            <div className="dispatch-route-info">
+              <span>{route.distance_km ?? '?'} km</span>
+              <span className="dispatch-dot">·</span>
+              <span>{route.eta_minutes ?? '?'} min ETA</span>
+              {route.route_source === 'straight_line_fallback' && (
+                <span className="dispatch-fallback-note">≈ straight line</span>
+              )}
+            </div>
+          )}
+        </>
+      ) : (
+        <span className="dispatch-unavailable">Pending lookup</span>
+      )}
+    </div>
+  )
+}
+
+// ─── Detail Panel ────────────────────────────────────────────────────
+function DetailPanel({ incident, onClose }) {
+  if (!incident) {
+    return (
+      <aside className="detail-panel empty-detail" id="detail-panel">
+        <div className="empty-state">
+          <div className="empty-icon">🗺️</div>
+          <h3>Select a camera</h3>
+          <p>Click a numbered marker on the map to inspect verified evidence, dispatch routing, and notification records.</p>
+        </div>
+      </aside>
     )
+  }
+
+  const plan = incident.dispatch_plan || {}
+  const det = incident.detection || {}
+  const notifications = incident.notifications || []
+
+  return (
+    <aside className="detail-panel" id="detail-panel">
+      <button className="detail-close" onClick={onClose} aria-label="Close detail panel">✕</button>
+
+      {/* Honesty badges */}
+      <div className="detail-badges">
+        {incident.source === 'test_replay' && (
+          <span className="honesty-badge replay-badge">📹 Recorded footage replay</span>
+        )}
+        {incident.source === 'live' && (
+          <span className="honesty-badge live-badge">🔴 Live detection</span>
+        )}
+      </div>
+
+      {/* Header */}
+      <h2 className="detail-category" style={{ color: categoryColor(incident.category) }}>
+        {categoryLabel(incident.category)}
+      </h2>
+      <div className="detail-location">
+        <strong>{incident.camera_name}</strong>
+        <span>{incident.place_text}</span>
+        <span className="detail-time">{fmtDateTime(incident.detected_at)}</span>
+      </div>
+
+      {/* Evidence media */}
+      <div className="detail-media">
+        <video
+          controls
+          src={evidenceUrl(incident, 'clip.mp4')}
+          poster={evidenceUrl(incident, 'thumbnail.jpg')}
+          className="detail-video"
+          preload="metadata"
+        />
+        <img
+          src={evidenceUrl(incident, 'best_frame.jpg')}
+          alt="Best evidence frame"
+          className="detail-best-frame"
+          loading="lazy"
+        />
+      </div>
+
+      {/* Detection metadata */}
+      <div className="detail-meta-grid">
+        <div className="meta-item">
+          <span className="meta-label">Peak / Mean</span>
+          <span className="meta-value">
+            {det.peak_confidence?.toFixed(2) ?? '—'} / {det.mean_confidence?.toFixed(2) ?? '—'}
+          </span>
+        </div>
+        <div className="meta-item">
+          <span className="meta-label">Threshold</span>
+          <span className="meta-value">{det.threshold_applied ?? '—'}</span>
+        </div>
+        <div className="meta-item">
+          <span className="meta-label">Model</span>
+          <span className="meta-value mono">{det.model_name || '—'}</span>
+        </div>
+        <div className="meta-item">
+          <span className="meta-label">Frames confirmed</span>
+          <span className="meta-value">{det.frames_confirmed || '—'}</span>
+        </div>
+      </div>
+
+      {/* Status buttons */}
+      <div className="detail-actions">
+        <StatusButton incident={incident} status="confirmed" label="✓ Confirm" color="#34D399" />
+        <StatusButton incident={incident} status="false_positive" label="✗ False positive" color="#FF7180" />
+      </div>
+
+      {/* Notification Timeline */}
+      <h3 className="detail-section-title">Notification Timeline</h3>
+      {notifications.length > 0 ? (
+        <div className="timeline-list">
+          {notifications.map((n, i) => <TimelineItem key={i} record={n} />)}
+        </div>
+      ) : (
+        <p className="detail-muted">No notification attempts recorded yet.</p>
+      )}
+
+      {/* Dispatch Plan */}
+      <h3 className="detail-section-title">Dispatch Plan</h3>
+      {plan.assignments?.length > 0 ? (
+        <div className="dispatch-list">
+          {plan.assignments.map((a, i) => <DispatchCard key={i} assignment={a} />)}
+        </div>
+      ) : (
+        <p className="detail-muted">Dispatch lookup pending or unavailable.</p>
+      )}
+      {plan.contact_policy && (
+        <p className="detail-contact-policy">
+          ⓘ {plan.contact_policy.replace(/_/g, ' ')}
+        </p>
+      )}
+    </aside>
+  )
+}
+
+// ─── Status Button ───────────────────────────────────────────────────
+function StatusButton({ incident, status, label, color }) {
+  const [loading, setLoading] = useState(false)
+  const isActive = incident.status === status
+
+  const handleClick = async () => {
+    if (isActive || loading) return
+    setLoading(true)
+    try {
+      await api.patch(`/incidents/${incident.incident_id}/status`, { status })
+      toast.success(`Incident marked as ${status.replace(/_/g, ' ')}`)
+    } catch {
+      toast.error('Failed to update status')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
-    <div className="h-[calc(100vh-6rem)] flex gap-4">
-      {/* Sidebar */}
-      <aside className="w-[260px] flex-shrink-0 flex flex-col gap-3 overflow-y-auto">
-        <div className="card-sm">
-          <p className="text-xs text-ink-muted">
-            {cameraCount} data source{cameraCount === 1 ? '' : 's'} · {filteredIncidents.length} mapped incidents
-          </p>
+    <button
+      className={`status-btn ${isActive ? 'active' : ''}`}
+      style={{ '--btn-color': color }}
+      onClick={handleClick}
+      disabled={loading}
+      aria-label={label}
+    >
+      {loading ? '…' : label}
+    </button>
+  )
+}
+
+// ─── Live Camera Tile ────────────────────────────────────────────────
+function LiveCameraTile({ camera }) {
+  const isOnline = camera.status === 'online'
+  return (
+    <article className="live-tile" aria-label={`Live feed: ${camera.camera_name}`}>
+      {isOnline ? (
+        <img
+          src={`/api/v1/cameras/${camera.camera_id}/live`}
+          alt={`Live annotated stream from ${camera.camera_name}`}
+          className="live-feed-img"
+        />
+      ) : (
+        <div className="live-feed-offline">
+          <span>📵</span>
+          <span>Camera offline</span>
+        </div>
+      )}
+      <div className="live-tile-info">
+        <strong>
+          {camera.camera_type === 'phone' ? 'Demo phone camera' : ''} {camera.camera_name}
+        </strong>
+        <div className="live-tile-status">
+          <span className={`status-indicator ${isOnline ? 'online' : 'offline'}`} />
+          <span className={isOnline ? 'text-online' : 'text-offline'}>
+            {camera.status}
+          </span>
+          {camera.effective_fps != null && (
+            <span className="live-fps">{camera.effective_fps} FPS</span>
+          )}
+        </div>
+      </div>
+    </article>
+  )
+}
+
+// ─── Demo Controls Panel ─────────────────────────────────────────────
+function DemoControls({ groups, onRefresh }) {
+  const [triggerLoading, setTriggerLoading] = useState(false)
+  const [triggerCategory, setTriggerCategory] = useState('fire')
+
+  const handleTrigger = async () => {
+    const cam = groups[0]
+    if (!cam) return toast.error('No cameras available')
+    setTriggerLoading(true)
+    try {
+      await api.post('/demo/trigger', { camera_id: cam.camera_id, category: triggerCategory })
+      toast.success(`Test ${triggerCategory} incident triggered on ${cam.camera_name}`)
+      onRefresh()
+    } catch (err) {
+      toast.error(`Trigger failed: ${err.response?.data?.detail || err.message}`)
+    } finally {
+      setTriggerLoading(false)
+    }
+  }
+
+  return (
+    <div className="demo-controls-panel" role="region" aria-label="Demo controls">
+      <div className="demo-controls-header">
+        <span className="demo-controls-title">🎛️ Demo Controls</span>
+        <span className="demo-controls-hint">Ctrl+Shift+D to toggle</span>
+      </div>
+      <div className="demo-controls-buttons">
+        <button className="demo-btn" disabled title="Requires demo/showcase.db with 5 verified incidents">
+          📦 Load showcase
+        </button>
+        <button className="demo-btn" onClick={onRefresh}>
+          🔄 Reset view
+        </button>
+        <div className="demo-trigger-row">
+          <select
+            className="demo-select"
+            value={triggerCategory}
+            onChange={(e) => setTriggerCategory(e.target.value)}
+            aria-label="Trigger category"
+          >
+            <option value="fire">🔥 Fire</option>
+            <option value="road_accident">🚗 Crash</option>
+          </select>
+          <button
+            className="demo-btn trigger"
+            onClick={handleTrigger}
+            disabled={triggerLoading}
+          >
+            {triggerLoading ? '⏳ Triggering…' : '⚡ Trigger test incident'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Loading Skeleton ────────────────────────────────────────────────
+function MapSkeleton() {
+  return (
+    <div className="map-skeleton">
+      <div className="skeleton-pulse" style={{ width: '60%', height: 20 }} />
+      <div className="skeleton-pulse" style={{ width: '40%', height: 16, marginTop: 8 }} />
+      <div className="skeleton-map-area">
+        <div className="skeleton-pulse dot" style={{ left: '30%', top: '40%' }} />
+        <div className="skeleton-pulse dot" style={{ left: '55%', top: '35%' }} />
+        <div className="skeleton-pulse dot" style={{ left: '45%', top: '60%' }} />
+      </div>
+    </div>
+  )
+}
+
+// ─── Error State ─────────────────────────────────────────────────────
+function ErrorState({ message, onRetry }) {
+  return (
+    <div className="error-state">
+      <span className="error-icon">⚠️</span>
+      <h3>Connection Error</h3>
+      <p>{message || 'Unable to reach the API. Check that the backend is running.'}</p>
+      <button className="demo-btn" onClick={onRetry}>Retry</button>
+    </div>
+  )
+}
+
+// ═════════════════════════════════════════════════════════════════════
+//  MAIN MAP VIEW
+// ═════════════════════════════════════════════════════════════════════
+export default function MapView() {
+  const [groups, setGroups] = useState([])
+  const [cameraStatus, setCameraStatus] = useState([])
+  const [selected, setSelected] = useState(null)
+  const [hoveredId, setHoveredId] = useState(null)
+  const [liveId, setLiveId] = useState(null)
+  const [showControls, setShowControls] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [newIncidentIds, setNewIncidentIds] = useState(new Set())
+  const mapRef = useRef(null)
+  const prevGroupsRef = useRef([])
+  const wsRef = useRef(null)
+
+  // ── Data fetching ──────────────────────────────────────────────────
+  const fetchData = useCallback(async () => {
+    try {
+      const [mapRes, camRes] = await Promise.all([
+        api.get('/map/groups'),
+        api.get('/cameras/status'),
+      ])
+      const newGroups = mapRes.data.groups || []
+      setCameraStatus(camRes.data.cameras || [])
+
+      // Detect new incidents for pulse animation
+      const prevIds = new Set()
+      prevGroupsRef.current.forEach((g) =>
+        (g.incidents || []).forEach((i) => prevIds.add(i.incident_id))
+      )
+      const freshIds = new Set()
+      newGroups.forEach((g) =>
+        (g.incidents || []).forEach((i) => {
+          if (!prevIds.has(i.incident_id)) freshIds.add(i.incident_id)
+        })
+      )
+
+      if (freshIds.size > 0 && prevGroupsRef.current.length > 0) {
+        // Find the group with the newest incident for fly-to
+        const newestGroup = newGroups.find((g) =>
+          (g.incidents || []).some((i) => freshIds.has(i.incident_id))
+        )
+        if (newestGroup) {
+          const newestInc = (newestGroup.incidents || []).find((i) => freshIds.has(i.incident_id))
+          toast(
+            `🚨 New ${categoryLabel(newestInc?.category || 'incident')} at ${newestGroup.camera_name}`,
+            {
+              icon: '🔴',
+              duration: 5000,
+              style: {
+                background: '#1a1020',
+                border: `1px solid ${categoryColor(newestInc?.category)}`,
+                color: '#f4f7fb',
+                fontSize: '14px',
+                fontWeight: 600,
+              },
+            }
+          )
+          // Fly to the new incident
+          if (mapRef.current && !PREFERSREDUCEDMOTION) {
+            mapRef.current.flyTo({
+              center: [newestGroup.longitude, newestGroup.latitude],
+              zoom: 15,
+              duration: 1200,
+            })
+          }
+        }
+        setNewIncidentIds(freshIds)
+        // Clear pulse after 4s
+        setTimeout(() => setNewIncidentIds(new Set()), 4000)
+      }
+
+      prevGroupsRef.current = newGroups
+      setGroups(newGroups)
+      setError(null)
+    } catch (err) {
+      if (groups.length === 0) setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [groups.length])
+
+  // ── WebSocket for real-time incident push ──────────────────────────
+  useEffect(() => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = `${protocol}//${window.location.host}/api/v1/incidents/ws`
+    let reconnectTimer = null
+
+    function connect() {
+      try {
+        const ws = new WebSocket(wsUrl)
+        wsRef.current = ws
+        ws.onmessage = () => {
+          // Any incident_created message triggers a refresh
+          fetchData()
+        }
+        ws.onclose = () => {
+          reconnectTimer = setTimeout(connect, 3000)
+        }
+        ws.onerror = () => ws.close()
+      } catch {
+        reconnectTimer = setTimeout(connect, 3000)
+      }
+    }
+
+    connect()
+    return () => {
+      clearTimeout(reconnectTimer)
+      wsRef.current?.close()
+    }
+  }, [fetchData])
+
+  // ── Polling fallback (2s) ──────────────────────────────────────────
+  useEffect(() => {
+    fetchData()
+    const id = setInterval(fetchData, POLL_MS)
+    return () => clearInterval(id)
+  }, [fetchData])
+
+  // ── Keyboard shortcut for demo controls ────────────────────────────
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'd') {
+        e.preventDefault()
+        setShowControls((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
+
+  // ── Fit map to all cameras on load ─────────────────────────────────
+  useEffect(() => {
+    if (!TOKEN || !groups.length || !mapRef.current) return
+    const lngs = groups.map((g) => g.longitude)
+    const lats = groups.map((g) => g.latitude)
+    mapRef.current.fitBounds(
+      [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+      { padding: 100, maxZoom: 14, duration: PREFERSREDUCEDMOTION ? 0 : 600 }
+    )
+  }, [groups.length > 0 && loading === false]) // only on initial load
+
+  // ── Fly back to overview ───────────────────────────────────────────
+  const flyToOverview = useCallback(() => {
+    if (!mapRef.current || !groups.length) return
+    const lngs = groups.map((g) => g.longitude)
+    const lats = groups.map((g) => g.latitude)
+    mapRef.current.fitBounds(
+      [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+      { padding: 100, maxZoom: 14, duration: PREFERSREDUCEDMOTION ? 0 : 800 }
+    )
+    setSelected(null)
+    setLiveId(null)
+  }, [groups])
+
+  // ── Select a camera group (click marker → detail panel) ────────────
+  const selectGroup = useCallback(
+    async (group) => {
+      try {
+        const incId = group.incidents?.[0]?.incident_id
+        if (!incId) return
+        const { data } = await api.get(`/incidents/${incId}`)
+        setSelected(data)
+        setLiveId(group.camera_id)
+        if (mapRef.current && !PREFERSREDUCEDMOTION) {
+          mapRef.current.flyTo({
+            center: [group.longitude, group.latitude],
+            zoom: 15,
+            duration: 700,
+          })
+        }
+      } catch (err) {
+        toast.error('Failed to load incident details')
+      }
+    },
+    []
+  )
+
+  // ── Dispatch route overlay on map ──────────────────────────────────
+  const routeGeoJSON = useMemo(() => {
+    if (!selected?.dispatch_plan?.assignments) return null
+    const coords = selected.dispatch_plan.assignments
+      .filter((a) => a.route?.geometry?.coordinates)
+      .flatMap((a) => a.route.geometry.coordinates)
+    if (coords.length < 2) return null
+    // Build individual line features for each assignment
+    const features = selected.dispatch_plan.assignments
+      .filter((a) => a.route?.geometry)
+      .map((a) => ({
+        type: 'Feature',
+        geometry: a.route.geometry,
+        properties: { category: a.service_category },
+      }))
+    return { type: 'FeatureCollection', features }
+  }, [selected])
+
+  // ── Live cameras (show all, highlight phones) ──────────────────────
+  const liveCameras = useMemo(
+    () => cameraStatus.filter((c) => c.camera_type === 'phone'),
+    [cameraStatus]
+  )
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  RENDER
+  // ═══════════════════════════════════════════════════════════════════
+
+  if (loading && groups.length === 0) return <section className="demo-page"><MapSkeleton /></section>
+  if (error && groups.length === 0) return <section className="demo-page"><ErrorState message={error} onRetry={fetchData} /></section>
+
+  return (
+    <section className="demo-page" id="hackathon-dashboard">
+      {/* ── Header ───────────────────────────────────────────────── */}
+      <header className="demo-header">
+        <div className="demo-header-left">
+          <span className="demo-mode-badge" aria-label="Demo mode active">DEMO MODE</span>
+          <div>
+            <h1 className="demo-title">Live Incident Command Map</h1>
+            <p className="demo-subtitle">
+              Camera-level locations · dispatcher-reviewed evidence · real-time detection
+            </p>
+          </div>
+        </div>
+        <button className="overview-btn" onClick={flyToOverview} aria-label="Back to overview">
+          ← Back to overview
+        </button>
+      </header>
+
+      {/* ── Demo Controls (hidden, Ctrl+Shift+D) ─────────────────── */}
+      {showControls && <DemoControls groups={groups} onRefresh={fetchData} />}
+
+      {/* ── Main Grid: Map + Detail ──────────────────────────────── */}
+      <div className="demo-grid">
+        {/* Map Container */}
+        <div className="map-container">
+          {TOKEN ? (
+            <Map
+              ref={mapRef}
+              mapboxAccessToken={TOKEN}
+              initialViewState={{ longitude: 75.79, latitude: 26.91, zoom: 12 }}
+              mapStyle="mapbox://styles/mapbox/dark-v11"
+              style={{ width: '100%', height: '100%' }}
+              attributionControl={false}
+            >
+              {groups.map((g, idx) => {
+                const mainCategory = mostSevereCategory(g.incidents)
+                const color = categoryColor(mainCategory)
+                const isNew = (g.incidents || []).some((i) => newIncidentIds.has(i.incident_id))
+                const isLive = liveId === g.camera_id
+                const isPhone = g.camera_type === 'phone'
+                const isHovered = hoveredId === g.camera_id
+
+                return (
+                  <Marker key={g.camera_id} longitude={g.longitude} latitude={g.latitude}>
+                    <button
+                      className={[
+                        'camera-marker',
+                        isNew && !PREFERSREDUCEDMOTION ? 'pulse' : '',
+                        isLive ? 'selected' : '',
+                        isPhone ? 'phone' : '',
+                      ].filter(Boolean).join(' ')}
+                      style={{ '--marker-color': color }}
+                      onMouseEnter={() => setHoveredId(g.camera_id)}
+                      onMouseLeave={() => setHoveredId(null)}
+                      onClick={() => selectGroup(g)}
+                      aria-label={`Camera ${idx + 1}: ${g.camera_name}, ${g.count} incidents`}
+                    >
+                      <span className="marker-number">{idx + 1}</span>
+                      {isNew && <span className="marker-pulse-ring" />}
+                    </button>
+                    {isHovered && (
+                      <HoverPopup group={g} onPin={() => selectGroup(g)} />
+                    )}
+                  </Marker>
+                )
+              })}
+
+              {/* Dispatch route lines */}
+              {routeGeoJSON && (
+                <Source type="geojson" data={routeGeoJSON}>
+                  <Layer
+                    type="line"
+                    paint={{
+                      'line-color': '#7FE3D0',
+                      'line-width': 3,
+                      'line-dasharray': [2, 2],
+                      'line-opacity': 0.8,
+                    }}
+                  />
+                </Source>
+              )}
+            </Map>
+          ) : (
+            /* ── Mapbox-free fallback ─────────────────────────────── */
+            <div className="map-fallback">
+              <div className="fallback-dots">
+                {groups.map((g, idx) => {
+                  const mainCategory = mostSevereCategory(g.incidents)
+                  return (
+                    <button
+                      key={g.camera_id}
+                      className={`camera-marker fallback ${g.camera_type === 'phone' ? 'phone' : ''}`}
+                      style={{
+                        '--marker-color': categoryColor(mainCategory),
+                        left: `${12 + (idx * 23) % 76}%`,
+                        top: `${15 + (idx * 31) % 65}%`,
+                      }}
+                      onClick={() => selectGroup(g)}
+                      aria-label={`Camera ${idx + 1}: ${g.camera_name}`}
+                    >
+                      <span className="marker-number">{idx + 1}</span>
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="fallback-label">
+                Map tiles unavailable — showing camera positions with straight-line routing fallback.
+                <br />Set <code>VITE_MAPBOX_TOKEN</code> in <code>frontend/.env</code> for full map rendering.
+              </p>
+            </div>
+          )}
+
+          {/* Legend */}
+          <div className="map-legend" role="img" aria-label="Map legend">
+            <div className="legend-item">
+              <span className="legend-dot" style={{ background: '#FF951F' }} />
+              <span>Fire</span>
+            </div>
+            <div className="legend-item">
+              <span className="legend-dot" style={{ background: '#FF4B3E' }} />
+              <span>Crash</span>
+            </div>
+            <div className="legend-item">
+              <span className="legend-dot" style={{ background: '#E74C6F' }} />
+              <span>Assault</span>
+            </div>
+            <div className="legend-item">
+              <span className="legend-dot" style={{ background: '#A97BFF' }} />
+              <span>Snatch</span>
+            </div>
+            <div className="legend-item">
+              <span className="legend-dot phone-ring-legend" />
+              <span>Demo phone</span>
+            </div>
+          </div>
+
+          {/* Empty state overlay */}
+          {groups.length === 0 && !loading && (
+            <div className="map-empty-overlay">
+              <span>No incidents detected yet.</span>
+              <span>Camera feeds are being monitored in real time.</span>
+            </div>
+          )}
         </div>
 
-        {unlocatedCount > 0 && (
-          <div className="card-sm border-sev-medium/30 bg-sev-medium/[0.06]">
-            <p className="text-xs text-ink-muted">
-              <span className="text-sev-medium font-semibold">{unlocatedCount}</span> more incident{unlocatedCount === 1 ? '' : 's'} exist without a specific location (still visible in Live Incidents) and {unlocatedCount === 1 ? "isn't" : "aren't"} pinned here.
+        {/* Detail Panel */}
+        <DetailPanel incident={selected} onClose={() => { setSelected(null); setLiveId(null) }} />
+      </div>
+
+      {/* ── Live Cameras Panel ────────────────────────────────────── */}
+      <section className="live-cameras-section" id="live-cameras-panel">
+        <h2 className="section-title">
+          Live Cameras
+          <span className="section-count">{liveCameras.length}</span>
+        </h2>
+        {liveCameras.length > 0 ? (
+          <div className="live-cameras-grid">
+            {liveCameras.map((cam) => (
+              <LiveCameraTile key={cam.camera_id} camera={cam} />
+            ))}
+          </div>
+        ) : (
+          <div className="live-cameras-empty">
+            <p>
+              No demo phone cameras registered. Use{' '}
+              <code>python scripts/add_phone_camera.py</code> to add one.
             </p>
           </div>
         )}
-
-        <div className="card-sm">
-          <p className="text-[11px] font-mono uppercase tracking-wider text-ink-faint mb-2">Layers</p>
-          <div className="space-y-2">
-            <LayerToggle label="Incident pins (located only)" count={filteredIncidents.length} checked={showPins} onChange={setShowPins} />
-            <LayerToggle label="Density heatmap" count={heatmap.length} checked={showHeatmap} onChange={setShowHeatmap} />
-            <LayerToggle label="Data source coverage" count={cameraCount} checked={showCoverage} onChange={setShowCoverage} />
-          </div>
-        </div>
-
-        <div className="card-sm">
-          <p className="text-[11px] font-mono uppercase tracking-wider text-ink-faint mb-2">Detection type</p>
-          <div className="flex flex-wrap gap-1.5">
-            {INCIDENT_TYPES.map(type => (
-              <button
-                key={type}
-                onClick={() => handleTypeToggle(type)}
-                className={classNames(
-                  'px-2 py-1 rounded-lg text-[11px] font-medium transition-colors',
-                  visibleTypes.includes(type)
-                    ? 'bg-signal/15 text-signal border border-signal/30'
-                    : 'text-ink-faint hover:text-ink hover:bg-white/5 border border-transparent'
-                )}
-              >
-                {TYPE_LABELS[type]} <span className="font-mono">{typeCounts[type] || 0}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="card-sm flex-1 min-h-0 flex flex-col">
-          <p className="text-[11px] font-mono uppercase tracking-wider text-ink-faint mb-2">Hotspot locations</p>
-          <div className="space-y-2 overflow-y-auto">
-            {hotspotCameras.map(h => (
-              <button
-                key={h.cam}
-                onClick={() => flyToCamera(h)}
-                className="w-full text-left text-xs rounded-lg p-1.5 -mx-1.5 hover:bg-white/5 transition-colors cursor-pointer"
-                title={`Fly to ${h.cam}`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-ink font-medium">{h.cam}</span>
-                  <span className="font-mono text-ink-faint">{h.total}</span>
-                </div>
-                <p className="text-[10px] text-ink-faint mb-1 truncate">{h.address}</p>
-                <div className="h-1.5 rounded-full overflow-hidden flex bg-ground-line">
-                  {SEVERITY_ORDER.map(sev => {
-                    const pct = (h.sev[sev] / h.total) * 100
-                    if (!pct) return null
-                    return <div key={sev} style={{ width: `${pct}%`, background: SEVERITY_HEX[sev] }} />
-                  })}
-                </div>
-              </button>
-            ))}
-            {hotspotCameras.length === 0 && <p className="text-xs text-ink-faint">No data yet</p>}
-          </div>
-        </div>
-
-        <div className="card-sm">
-          <p className="text-[11px] font-mono uppercase tracking-wider text-ink-faint mb-2">Legend</p>
-          <div className="space-y-1.5 text-xs">
-            {SEVERITY_ORDER.map(sev => (
-              <div key={sev} className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full" style={{ background: SEVERITY_HEX[sev] }} />
-                <span className="text-ink-muted">{SEVERITY_LABEL[sev]}</span>
-              </div>
-            ))}
-            <div className="flex items-center gap-2 pt-1 border-t border-ground-line">
-              <Camera className="w-3 h-3 text-ink-faint" />
-              <span className="text-ink-muted">Data source</span>
-            </div>
-            <div className="flex items-center gap-2 pt-1 border-t border-ground-line">
-              <span className="w-3.5 h-3.5 rounded-full flex items-center justify-center text-[7px] font-mono font-bold text-ink flex-shrink-0" style={{ background: 'rgba(91,155,255,0.28)', border: '1.5px solid rgba(91,155,255,0.7)' }}>N</span>
-              <span className="text-ink-muted">Cluster — click to zoom in and split it apart</span>
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      {/* Map */}
-      <div className="flex-1 relative rounded-xl overflow-hidden border border-ground-line">
-        {/* Live incident toast -- new WebSocket push while on this page */}
-        {liveFlash && (
-          <button
-            onClick={() => { setSelectedIncident(liveFlash); setLiveFlash(null) }}
-            className={classNames(
-              'absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-3 py-1.5 rounded-full border backdrop-blur-sm shadow-lg animate-fade-up transition-colors',
-              liveFlash.severity === 'critical'
-                ? 'bg-sev-critical/15 border-sev-critical/40 text-sev-critical'
-                : 'bg-signal/10 border-signal/30 text-signal'
-            )}
-          >
-            <Radio className="w-3.5 h-3.5" />
-            <span className="text-xs font-medium">
-              New {TYPE_LABELS[liveFlash.incident_type] || liveFlash.incident_type} · {liveFlash.location?.camera_id}
-            </span>
-            <span className={severityChipClass(liveFlash.severity)}>{SEVERITY_LABEL[liveFlash.severity]}</span>
-          </button>
-        )}
-
-        {/* 2D / 3D toggle */}
-        <div className="absolute top-3 right-3 z-10 flex items-center gap-1 bg-ground-panel/95 backdrop-blur-sm border border-ground-line rounded-lg p-1">
-          <button
-            onClick={() => is3D && toggle3D()}
-            className={classNames('flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-colors', !is3D ? 'bg-signal/15 text-signal' : 'text-ink-faint hover:text-ink')}
-          >
-            <Square className="w-3 h-3" /> 2D
-          </button>
-          <button
-            onClick={() => !is3D && toggle3D()}
-            className={classNames('flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-colors', is3D ? 'bg-signal/15 text-signal' : 'text-ink-faint hover:text-ink')}
-          >
-            <Box className="w-3 h-3" /> 3D
-          </button>
-        </div>
-
-        <MapboxMap
-          ref={mapRef}
-          mapboxAccessToken={MAPBOX_TOKEN}
-          initialViewState={{ longitude: INDIA_CENTER.longitude, latitude: INDIA_CENTER.latitude, zoom: INDIA_DEFAULT_ZOOM, pitch: 0, bearing: 0 }}
-          mapStyle={is3D ? STYLE_3D : STYLE_2D}
-          style={{ width: '100%', height: '100%' }}
-          maxZoom={19}
-          minZoom={3.5}
-          onClick={handleMapClick}
-          onMouseMove={handleMapMouseMove}
-          interactiveLayerIds={['incident-clusters', 'incident-unclustered-point']}
-        >
-          {showCoverage && cameraLocations.features.length > 0 && (
-            <Source id="camera-fov" type="geojson" data={cameraLocations}>
-              <Layer
-                id="camera-fov-fill"
-                type="circle"
-                paint={{
-                  'circle-radius': 32,
-                  'circle-color': '#7FE3D0',
-                  'circle-opacity': 0.05,
-                  'circle-stroke-width': 1,
-                  'circle-stroke-color': '#7FE3D0',
-                  'circle-stroke-opacity': 0.35,
-                }}
-              />
-            </Source>
-          )}
-
-          {showHeatmap && heatmapGeoJSON.features.length > 0 && (
-            <Source id="incident-heat" type="geojson" data={heatmapGeoJSON}>
-              <Layer
-                id="incident-heat-layer"
-                type="heatmap"
-                paint={{
-                  'heatmap-weight': ['get', 'weight'],
-                  'heatmap-intensity': 0.8,
-                  'heatmap-radius': 34,
-                  'heatmap-opacity': 0.55,
-                  'heatmap-color': [
-                    'interpolate', ['linear'], ['heatmap-density'],
-                    0,    'rgba(0,0,0,0)',
-                    0.2,  'rgba(91,155,255,0.5)',
-                    0.4,  'rgba(245,197,66,0.6)',
-                    0.6,  'rgba(255,138,31,0.7)',
-                    1,    'rgba(255,75,62,0.85)',
-                  ],
-                }}
-              />
-            </Source>
-          )}
-
-          {showPins && (
-            <Source
-              id="incidents"
-              type="geojson"
-              data={incidentsGeoJSON}
-              cluster={true}
-              clusterMaxZoom={13}
-              clusterRadius={50}
-            >
-              <Layer
-                id="incident-clusters"
-                type="circle"
-                filter={['has', 'point_count']}
-                paint={{
-                  'circle-color': '#5B9BFF',
-                  'circle-opacity': 0.28,
-                  'circle-stroke-width': 2,
-                  'circle-stroke-color': '#5B9BFF',
-                  'circle-stroke-opacity': 0.7,
-                  'circle-radius': [
-                    'step', ['get', 'point_count'],
-                    16, 10,
-                    22, 25,
-                    28, 50,
-                    36, 100,
-                    46,
-                  ],
-                }}
-              />
-              <Layer
-                id="incident-cluster-count"
-                type="symbol"
-                filter={['has', 'point_count']}
-                layout={{
-                  'text-field': ['get', 'point_count_abbreviated'],
-                  'text-font': ['DIN Pro Bold', 'Arial Unicode MS Bold'],
-                  'text-size': 12,
-                }}
-                paint={{ 'text-color': '#ECE9E1' }}
-              />
-              <Layer
-                id="incident-unclustered-point"
-                type="circle"
-                filter={['!', ['has', 'point_count']]}
-                paint={{
-                  'circle-radius': [
-                    'match', ['get', 'severity'],
-                    'critical', 11,
-                    'high', 9,
-                    'medium', 7.5,
-                    'low', 6.5,
-                    7,
-                  ],
-                  'circle-color': [
-                    'match', ['get', 'severity'],
-                    'critical', SEVERITY_HEX.critical,
-                    'high', SEVERITY_HEX.high,
-                    'medium', SEVERITY_HEX.medium,
-                    'low', SEVERITY_HEX.low,
-                    SEVERITY_HEX.low,
-                  ],
-                  'circle-stroke-width': 2,
-                  'circle-stroke-color': 'rgba(11,13,12,0.6)',
-                }}
-              />
-            </Source>
-          )}
-
-          {selectedIncident && (
-            <IncidentPopupCard
-              incident={selectedIncident}
-              longitude={selectedIncident.location.longitude}
-              latitude={selectedIncident.location.latitude}
-              onClose={() => setSelectedIncident(null)}
-            />
-          )}
-
-          {hoveredIncident && hoveredIncident.incident_id !== selectedIncident?.incident_id && (
-            <Popup
-              longitude={hoveredIncident.location.longitude}
-              latitude={hoveredIncident.location.latitude}
-              closeButton={false}
-              closeOnClick={false}
-              offset={16}
-              anchor="bottom"
-              className="reticle-mapbox-popup reticle-mapbox-popup-hover"
-            >
-              <div onMouseEnter={() => handleHover(hoveredIncident)} onMouseLeave={handleLeave}>
-                <IncidentHoverPreview incident={hoveredIncident} />
-              </div>
-            </Popup>
-          )}
-        </MapboxMap>
-
-        {/* Zoom / recenter controls */}
-        <div className="absolute bottom-20 right-4 z-10 flex flex-col gap-1 bg-ground-panel/95 backdrop-blur-sm border border-ground-line rounded-lg p-1">
-          <button onClick={handleZoomIn} className="p-2 rounded hover:bg-white/5 text-ink-muted" aria-label="Zoom in">
-            <ZoomIn className="w-4 h-4" />
-          </button>
-          <button onClick={handleZoomOut} className="p-2 rounded hover:bg-white/5 text-ink-muted" aria-label="Zoom out">
-            <ZoomOut className="w-4 h-4" />
-          </button>
-          <button onClick={handleReset} className="p-2 rounded hover:bg-white/5 text-ink-muted" aria-label="Recenter">
-            <Home className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="absolute bottom-3 left-3 right-3 z-10 bg-ground-panel/95 backdrop-blur-sm border border-ground-line rounded-lg px-3 py-2 flex items-center justify-end">
-          <span className="text-[10px] font-mono text-ink-faint">
-            {analytics?.total_incidents ?? filteredIncidents.length} total
-          </span>
-        </div>
-      </div>
-    </div>
+      </section>
+    </section>
   )
 }
-
-function LayerToggle({ label, count, checked, onChange, disabled }) {
-  return (
-    <label className={classNames('flex items-center justify-between gap-2 text-xs cursor-pointer', disabled && 'opacity-50 cursor-not-allowed')}>
-      <span className="flex items-center gap-2 text-ink-muted">
-        <input
-          type="checkbox"
-          checked={checked}
-          disabled={disabled}
-          onChange={e => onChange(e.target.checked)}
-          className="w-3.5 h-3.5 rounded border-ground-line bg-ground accent-signal"
-        />
-        {label}
-      </span>
-      <span className="font-mono text-ink-faint">{count}</span>
-    </label>
-  )
-}
-
-export default MapView

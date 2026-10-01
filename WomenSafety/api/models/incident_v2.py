@@ -114,10 +114,20 @@ class Incident(BaseModel):
 
     source: SourceKind
 
-    # Placeholder only -- nothing is sent in this phase. Notification
-    # wiring (Telegram/call alerts) is explicitly out of scope for this
-    # phase; see CHANGELOG.md.
-    notification_status: str = "not_implemented"
+    # Dispatch Backend phase: replaces the old "not_implemented"
+    # placeholder with a real per-channel notification timeline. Each
+    # entry is one row from NotificationRecord (channel, status,
+    # timestamps, redacted recipient label, error text). Kept as a
+    # plain List[dict] here (not a typed sub-model) so the notification
+    # service, which is the only writer, owns the exact shape -- see
+    # api/services/notification_service.py's NotificationRecord.
+    notifications: List[dict] = Field(default_factory=list)
+
+    # Dispatch Backend phase: the computed dispatch plan (nearest
+    # required services per category, distance, route/ETA) -- built
+    # once at incident-creation time and stored here so the incident
+    # detail endpoint can expose it without recomputing on every read.
+    dispatch_plan: Optional[dict] = None
 
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)

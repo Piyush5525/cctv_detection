@@ -333,8 +333,6 @@ def main(headless: bool = False):
     fall_alerted_ids = set()
     emergency_alerted_ids = set()
     snatch_alerted = False
-    fire_alerted = False
-    crash_alerted = False
 
     # Track incidents sent to API to avoid duplicates
     api_incident_cooldown = {}
@@ -396,7 +394,7 @@ def main(headless: bool = False):
         )
 
     def detection_loop():
-        nonlocal latest, was_violent, snatch_alerted, fire_alerted, crash_alerted
+        nonlocal latest, was_violent, snatch_alerted
         while not stop_detection:
             iteration_start = time.time()
             frame = get_current_frame()
@@ -423,11 +421,21 @@ def main(headless: bool = False):
             # already guarantees get_current_frame() never returns a
             # stale queued frame).
             run_fire_crash_this_iteration = detection_gate.should_process(now=iteration_start)
-            # Feed into evidence buffer
-            try:
-                evidence_service.add_frame(os.environ.get('CAMERA_ID', 'CAM-001'), frame, datetime.utcnow())
-            except Exception:
-                pass
+            # Feed into the LEGACY raw-frame evidence buffer -- this only
+            # exists to let the legacy alert path (violence/fall/snatch,
+            # below) cut an evidence clip via save_evidence_clip(). Gated
+            # behind legacy_enabled (Dispatch Backend phase item 2): if
+            # LEGACY_DETECTORS_ENABLED=false, nothing downstream can ever
+            # consume this buffer, so filling it would just be ~1.2GB/
+            # camera of wasted memory (see CHANGELOG.md "Phase 1c
+            # Follow-up 3" for the measured per-camera cost) for no
+            # purpose. The demo runs with legacy_enabled=false, so this
+            # buffer is correctly never populated during the demo.
+            if legacy_enabled:
+                try:
+                    evidence_service.add_frame(os.environ.get('CAMERA_ID', 'CAM-001'), frame, datetime.utcnow())
+                except Exception:
+                    pass
 
             label = 'Unknown'
             confidence = 0.0
@@ -516,6 +524,15 @@ def main(headless: bool = False):
             # inference taking longer than the sample interval) also
             # correctly causes this iteration's frame to be skipped for
             # fire/crash, not just a too-fast crash-detector-only timer.
+            #
+            # Dispatch Backend phase: the legacy send_telegram_alert/
+            # send_call_alert/send_incident_to_api calls that used to
+            # fire here were REMOVED -- crash/fire now ONLY go through
+            # EventCapturePipeline -> handle_finished_event ->
+            # notification_service (real v2 Incident + dispatch plan +
+            # Telegram/call with inline buttons), never the legacy path,
+            # which would have double-sent for the exact same detection.
+            # See CHANGELOG.md for the full before/after.
             crash_result = None
             if crash_detector is not None and run_fire_crash_this_iteration:
                 try:
@@ -527,21 +544,10 @@ def main(headless: bool = False):
                         crash_result.boxes if crash_result and crash_result.detection else [],
                         'yolov8-crash', 'crash_best.pt', 0.5,
                     )
-                    if crash_result and crash_result.detection and not crash_alerted:
-                        message = f'CRASH/ACCIDENT DETECTED: {crash_result.detection} (confidence {crash_result.confidence:.2f})'
-                        send_telegram_alert(frame, message, reason='crash')
-                        send_call_alert(message, reason='crash')
-                        send_incident_to_api(frame, 'crash', crash_result.confidence, {
-                            'detection': crash_result.detection,
-                            'boxes': crash_result.boxes,
-                        })
-                        crash_alerted = True
-                    elif not crash_result.detection:
-                        crash_alerted = False
                 except Exception as e:
                     print(f'[Warning] Crash detection frame error: {e}')
 
-            # Fire detection -- same gate as crash above.
+            # Fire detection -- same gate as crash above, same removal.
             fire_result = None
             if fire_detector is not None and run_fire_crash_this_iteration:
                 try:
@@ -553,17 +559,6 @@ def main(headless: bool = False):
                         fire_result.boxes if fire_result.detection else [],
                         'yolov8-fire', 'best_nano_111.pt', 0.5,
                     )
-                    if fire_result.detection and not fire_alerted:
-                        message = f'FIRE/SMOKE DETECTED: {fire_result.detection} (confidence {fire_result.confidence:.2f})'
-                        send_telegram_alert(frame, message, reason='fire')
-                        send_call_alert(message, reason='fire')
-                        send_incident_to_api(frame, 'fire', fire_result.confidence, {
-                            'detection': fire_result.detection,
-                            'boxes': fire_result.boxes,
-                        })
-                        fire_alerted = True
-                    elif not fire_result.detection:
-                        fire_alerted = False
                 except Exception as e:
                     print(f'[Warning] Fire detection frame error: {e}')
 

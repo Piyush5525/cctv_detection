@@ -68,7 +68,15 @@ class Settings(BaseSettings):
     # comparison and testing. Defaults to True so ordinary live-deployment
     # behavior (violence/fall/snatch all running) is UNCHANGED unless
     # explicitly turned off.
-    LEGACY_DETECTORS_ENABLED: bool = True
+    LEGACY_DETECTORS_ENABLED: bool = False
+
+    # API-owned multi-camera demo workers.  They use the existing fire/crash
+    # detector interface only; this changes no model or threshold.
+    LIVE_CAMERA_WORKERS_ENABLED: bool = True
+    DETECT_MAX_WIDTH: int = 640
+    CAMERA_RECONNECT_INITIAL_S: float = 1.0
+    CAMERA_RECONNECT_MAX_S: float = 15.0
+    LIVE_VIEW_MAX_FPS: float = 8.0
 
     # Phase 1c follow-up 2 (HIGH-priority finding, see CHANGELOG.md): the
     # eval harness (scripts/eval_detectors.py) and scripts/camera_replay.py
@@ -105,6 +113,53 @@ class Settings(BaseSettings):
     # last-seen age) plus a per-track history cap.
     SNATCH_TRACKER_HISTORY_MAX_AGE_SECONDS: float = 30.0
     SNATCH_TRACKER_HISTORY_MAX_LEN: int = 30
+
+    # --- Dispatch backend (CHANGELOG.md "Dispatch Backend" phase) ---
+    # DEMO_MODE defaults true: calls/Telegram messages go ONLY to the
+    # allowlisted demo recipients below, never to a real looked-up
+    # hospital/police/fire number -- see api/services/safety_guard.py,
+    # the single place this rule (and the hard emergency-number block,
+    # which applies regardless of DEMO_MODE) is enforced.
+    DEMO_MODE: bool = True
+    DEMO_PHONE_NUMBER: str = ""
+    # If set, Telegram sends are restricted to exactly this chat_id
+    # (DEMO_MODE allowlist) -- defaults to TELEGRAM_CHAT_ID itself when
+    # unset, so an operator who only sets TELEGRAM_CHAT_ID (the existing
+    # env var) gets the allowlist "for free" without a second value to
+    # configure.
+    TELEGRAM_CHAT_ID_ALLOWLIST: str = ""
+
+    # SerpApi nearby-services lookup (api/services/nearby_services.py).
+    # Reuses the same SERPAPI_KEY already used by the archived news-scrape
+    # scripts -- read directly from the environment (not logged, not a
+    # Settings field) via os.environ.get("SERPAPI_KEY"), same pattern as
+    # scripts/fetch_india_incidents.py.
+    NEARBY_SERVICES_CACHE_PATH: Path = Path(__file__).parent.parent.parent / "cache" / "nearby_services.json"
+    NEARBY_SERVICES_CACHE_TTL_DAYS: int = 30
+    NEARBY_SERVICES_MAX_API_CALLS_PER_RUN: int = 30  # hard cap: 4 cameras x 3 categories = 12 calls typical; 30 covers headroom without being unbounded
+    NEARBY_SERVICES_TIMEOUT_S: float = 15.0
+    NEARBY_SERVICES_KEEP_TOP_N: int = 3
+
+    # Dispatch routing (api/services/dispatch_routing.py): Mapbox
+    # Directions for route polyline/ETA, cached per camera-service pair.
+    # MAPBOX_TOKEN read directly from env (not logged), same pattern as
+    # frontend/.env's VITE_MAPBOX_TOKEN but this is the BACKEND's own
+    # server-side key (Directions API is not a browser-safe call the
+    # frontend should make with its own public token for this purpose).
+    DISPATCH_ROUTE_CACHE_PATH: Path = Path(__file__).parent.parent.parent / "cache" / "dispatch_routes.json"
+    DISPATCH_ROUTE_CACHE_TTL_DAYS: int = 30
+    MAPBOX_DIRECTIONS_TIMEOUT_S: float = 10.0
+
+    # Notification service (api/services/notification_service.py).
+    ESCALATION_DELAY_S: float = 60.0
+    DEMO_ESCALATION_DELAY_S: float = 20.0
+    CALL_MIN_CONFIDENCE: float = 0.6  # fire at/above this confidence escalates to a call immediately, bypassing the delay
+    NOTIFICATION_COOLDOWN_S: float = 120.0  # at most one alert per camera+category per this many seconds
+    MAX_CALLS_PER_HOUR: int = 5
+    NOTIFICATION_QUEUE_MAX_SIZE: int = 50
+    NOTIFICATION_MAX_RETRIES: int = 3
+    NOTIFICATION_RETRY_BACKOFF_S: float = 2.0
+    TELEGRAM_VIDEO_MAX_BYTES: int = 50 * 1024 * 1024  # Telegram's own bot-API upload limit
 
     class Config:
         case_sensitive = True

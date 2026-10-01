@@ -1,5 +1,137 @@
 # Changelog
 
+## Hackathon dashboard — full rebuild (2026-10-01)
+
+Complete rewrite of the hackathon demo dashboard (`frontend/src/pages/MapView.jsx`,
+`frontend/src/index.css`), replacing the compressed single-file prototype with a
+properly structured, projector-optimised (1920×1080, large type, high contrast)
+React component tree.
+
+### Map (Mapbox GL)
+- One numbered dot per camera from `/api/v1/map/groups`, colour-coded by most
+  severe incident category (🟠 fire, 🔴 crash, 🟣 assault/snatch, 🟡 fall).
+- Phone cameras distinguished with a teal ring outline; `location_basis` badges.
+- Map auto-fits to all cameras on load; `flyTo` on incident selection.
+- Clear legend (fire, crash, assault, snatch, demo phone) — no overlapping.
+
+### Live incidents (WebSocket + 2 s polling)
+- WebSocket connection to `/api/v1/incidents/ws` triggers immediate data refresh.
+- 2 s polling fallback with automatic reconnect on WebSocket failure.
+- New incidents: marker pulses, toast notification with category and camera name,
+  map flies to the incident camera. Pulse clears after 4 s.
+- "Back to overview" button re-fits the map to all cameras.
+
+### Hover popup
+- Camera name, place, incident count, auto-advancing thumbnail slideshow (3 s)
+  with category, time, and confidence. Slide indicator dots.
+- Stays open while pointer is inside; click pins it and opens detail panel.
+- Phone and simulated-placement honesty badges shown in hover.
+
+### Detail panel
+- Clip player (with poster), best frame, detection metadata grid (peak/mean
+  confidence, threshold, model name, frames confirmed).
+- Status buttons (Confirm / False positive) with PATCH to API.
+- **Notification timeline**: real records from the dispatch backend —
+  channel icon, status colour, timestamp, detail, errors.
+- **Dispatch plan**: per-assignment cards (hospital/police/fire) with
+  service name, phone, distance, ETA, and route-source indicator.
+  Route polyline drawn on map (dashed teal GeoJSON line layer).
+- Honesty badges: "Recorded footage replay" for test_replay incidents,
+  "Live detection" for live, "Demo phone camera", "Simulated placement".
+
+### Live cameras panel
+- Tiles for each phone camera: live MJPEG stream img, online/offline
+  status indicator, effective FPS. Empty state with setup instructions.
+
+### Demo controls (Ctrl+Shift+D)
+- "Load showcase" (disabled — requires demo/showcase.db), "Reset view",
+  and "Trigger test incident" with category selector (fire/crash).
+  Calls `POST /api/v1/demo/trigger`.
+
+### Honesty badges
+- "Recorded footage replay" on replay incidents.
+- "Demo phone camera" and "Simulated placement" on cameras.
+- "DEMO MODE" badge in the header with gradient highlight.
+
+### Polish
+- Loading skeleton with shimmer animation.
+- Error state with retry button.
+- Empty-state overlay on map when no incidents exist.
+- `prefers-reduced-motion`: all pulse, fly-to, and hover animations disabled.
+- Keyboard accessibility: all interactive elements focusable with visible
+  `:focus-visible` outlines; demo controls via keyboard shortcut.
+- Consistent spacing, type scale (Space Grotesk headings, IBM Plex Sans body,
+  JetBrains Mono for technical values).
+- 1920×1080 projector layout: large markers (40px), readable labels (14–16px),
+  high-contrast dark theme.
+- Offline fallback: if Mapbox tiles unavailable, dots positioned on dark
+  gradient with labelled straight-line routing.
+
+### CSS
+- `index.css` rewritten from compressed single line to ~900 lines of
+  structured, documented CSS. All demo styles properly formatted with
+  clear section headers. Legacy tailwind component-layer classes preserved
+  for other pages.
+
+### Hackathon documentation
+- `docs/ARCHITECTURE.md`: Mermaid flow diagram covering camera→worker→
+  detection→evidence→SQLite→dispatch→frontend pipeline, design decision
+  table, directory layout.
+- `docs/DEMO_SCRIPT.md`: 3-minute timed script (map overview → hover/click →
+  live camera + trigger → close), 12-item pre-demo checklist (keys, mode,
+  hotspot, phone, cache, ffmpeg, trigger), and backup plan for 5 failure modes.
+- `docs/LIMITATIONS.md`: honest disclosure of pre-trained models, replayed
+  footage, simulated placement, configurable thresholds, human confirmation
+  requirement, demo mode safety rails, display-only service numbers, hard
+  emergency-number block, and post-hackathon next steps table.
+
+## Phone-camera demo and showcase preparation (2026-10-01)
+
+Added phone-camera registry metadata (`camera_type`, `location_basis`, and the
+operator-facing `Demo phone camera - <name>` label), registration/check scripts,
+API-owned latest-frame workers with reconnect backoff, status and MJPEG live
+view endpoints, original-resolution evidence with `DETECT_MAX_WIDTH=640`
+detection downscaling, and a stored-clip `POST /api/v1/demo/trigger` fallback.
+Live demo defaults now set `LEGACY_DETECTORS_ENABLED=false`; the legacy raw
+buffer remains unallocated on that path.
+
+Telegram dispatch captions now include camera/place/time/peak/threshold/plan,
+send a location pin, and include an immediate `Escalate now` action. Demo
+escalation uses `DEMO_ESCALATION_DELAY_S=20`; all existing demo allowlist and
+hard phone-number blocks remain in force.
+
+Replayed the available fire/crash samples through the existing pipeline and
+generated `demo/candidates.html`, sorted by confidence. The current set has
+five strong candidate rows but they are repeated replays of the same crash
+clip, plus one low-confidence fire candidate; it does **not** contain five
+distinct verified true positives. Showcase DB/reset creation is intentionally
+deferred until five approved candidate IDs are supplied.
+
+## Dispatch Backend (2026-10-01)
+
+Completed the v2 fire/crash dispatch path without restoring the removed legacy
+double-send path. `GET /api/v1/cameras/{id}/nearby-services` exposes cached or
+live SerpApi lookup data for registered cameras. `dispatch_routing.py` maps
+incident category to required responder types, picks the nearest returned
+service, obtains a cached Mapbox driving route when available, and otherwise
+returns a visibly-labelled straight-line estimate. Lookup results are display
+data only; their phone numbers are never call targets.
+
+`notification_service.py` adds a bounded worker queue, durable per-incident
+notification timeline, photo/message Telegram delivery with Confirm and False
+alarm callbacks, callback polling under the API lifespan, retry/backoff,
+camera/category cooldown, call-hour cap, and a Telegram-then-call escalation
+ladder. Calls are only ever attempted to `DEMO_PHONE_NUMBER` after the shared
+safety guard; real emergency numbers and all non-allowlisted numbers remain
+blocked. Incident creation now persists first and queues dispatch work after,
+so encoder threads never wait on lookup or outbound network I/O.
+
+Added `tests/test_dispatch_backend.py`: offline cache hit, API route handler,
+Mapbox fallback, category routing, emergency-format hard block, confirm/false
+alarm callbacks, escalation timer, and cooldown all pass (`8/8`). The cache
+and fallback tests deliberately use no real SerpApi/Mapbox requests; live API
+credentials remain an operator configuration step.
+
 ## Phase 1c Follow-up 3 (2026-10-01)
 
 ### Scope

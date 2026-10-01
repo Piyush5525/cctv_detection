@@ -47,6 +47,7 @@ function TopBar({ isConnected }) {
       <div className="flex-1" />
 
       <div className="flex items-center gap-3">
+        <span className="text-[10px] font-mono font-bold tracking-wider rounded bg-signal text-ground px-2 py-1">DEMO MODE</span>
         {/* Live WS status */}
         <div className={`live-indicator ${!isConnected ? 'opacity-50 border-ink-faint/30 bg-white/5 text-ink-faint' : ''}`}>
           <span className={isConnected ? 'live-dot' : 'w-1.5 h-1.5 rounded-full bg-ink-faint'} />

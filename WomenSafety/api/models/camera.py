@@ -1,4 +1,4 @@
-"""Camera registry: fixed CCTV locations known in advance, loaded from
+"""Camera registry: fixed CCTV and demo-phone locations loaded from
 config/cameras.json. The product is CCTV-only (see CHANGELOG.md "CCTV
 Incident Capture Pipeline" phase) -- every incident's location comes
 from this registry, snapshotted onto the incident at creation time.
@@ -14,7 +14,7 @@ CAM3_RTSP_URL), never persisted to disk in this config or printed.
 import json
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -35,9 +35,22 @@ class Camera(BaseModel):
     latitude: float
     longitude: float
     stream_source: str  # RTSP URL placeholder, device index as string, or video file path
+    camera_type: Literal["cctv", "phone"] = "cctv"
+    location_basis: Literal["real_installation", "simulated_placement"] = "real_installation"
     enabled: bool = True
     sample: bool = False
     field_of_view_note: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _phone_name_is_explicit(cls, v, info):
+        # The actual UI label is normalised in display_name below; allow a
+        # user-entered suffix such as "Entrance" without hiding its nature.
+        return v.strip()
+
+    @property
+    def display_name(self) -> str:
+        return f"Demo phone camera - {self.name}" if self.camera_type == "phone" else self.name
 
     @field_validator("latitude")
     @classmethod
