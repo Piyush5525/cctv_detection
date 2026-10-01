@@ -48,6 +48,17 @@ class RegistryFileTests(unittest.TestCase):
                                 stream_source="0", camera_type="phone").display_name, "Demo phone camera - CAM 001")
 
 
+class PickerTests(unittest.TestCase):
+    def test_demo_picker_lists_only_added_phone_cameras(self):
+        from fastapi.testclient import TestClient
+        from api.main import app
+        with TestClient(app) as client:
+            cams = client.get("/api/v1/cameras").json()["cameras"]
+        self.assertEqual([c["camera_id"] for c in cams], ["CAM-001", "CAM-002"])
+        self.assertEqual([c["name"] for c in cams], ["Demo phone camera - CAM 001", "Demo phone camera - CAM 002"])
+        self.assertNotIn("latitude", cams[0])
+
+
 class EnvResolutionTests(unittest.TestCase):
     def _location(self, **env):
         with patch.dict(os.environ, {**PHONE_ENV, **env}):

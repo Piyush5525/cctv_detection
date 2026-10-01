@@ -1,3 +1,7 @@
+# Demo picker (2026-10-01)
+
+The Demo controls camera picker (`GET /api/v1/cameras`) now lists only the added phone cameras (CAM-001, CAM-002); sample cameras are no longer offered. Test added.
+
 # Incident-aware dispatch layer (2026-10-01)
 
 Scope: dispatch map layer, dispatch card, and the small text changes in item 6. No detection / threshold / pipeline / escalation / cooldown / camera wall / showcase changes, no new dependencies (icons are inline SVG).

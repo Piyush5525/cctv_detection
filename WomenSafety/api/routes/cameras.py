@@ -17,10 +17,10 @@ demo_router = APIRouter(prefix="/demo", tags=["demo"], dependencies=[Depends(req
 
 @router.get("")
 async def list_cameras():
-    """Registered cameras (for the demo trigger picker); no stream sources."""
+    """Registered phone cameras (the real, added cameras) for the demo trigger picker; no stream sources or coordinates."""
     from api.models.camera import all_cameras
     return {"cameras": [{"camera_id": c.camera_id, "name": c.display_name, "camera_type": c.camera_type,
-                         "location_basis": c.location_basis, "place_text": c.place_text} for c in sorted((c for c in all_cameras() if c.enabled), key=lambda c: (c.camera_id == "CAM-001", c.camera_id))]}
+                         "location_basis": c.location_basis, "place_text": c.place_text} for c in sorted((c for c in all_cameras() if c.enabled and c.camera_type == "phone"), key=lambda c: c.camera_id)]}
 
 
 @router.get("/status")
