@@ -1354,3 +1354,62 @@ body {
 
 .loc-badge { background: rgba(127, 227, 208, 0.12); color: #7FE3D0; border: 1px solid rgba(127, 227, 208, 0.35); }
 .detail-badges { padding-right: 44px; }
+
+
+/* ── Experimental action detectors (fall / violence / snatch) ───────────── */
+.exp-badge {
+  background: rgba(255, 184, 41, 0.14);
+  color: #FFB829;
+  border: 1px dashed rgba(255, 184, 41, 0.6);
+}
+
+.camera-marker.experimental { outline: 2px dashed rgba(255, 184, 41, 0.85); outline-offset: 2px; }
+
+.marker-exp {
+  position: absolute;
+  top: -9px;
+  right: -14px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  background: #FFB829;
+  color: #0B1119;
+}
+
+.legend-dot.exp-dot { outline: 1px dashed rgba(255, 184, 41, 0.9); outline-offset: 1px; }
+.legend-exp { font-style: normal; font-size: 10px; color: #FFB829; }
+
+.filter-chips {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  z-index: 6;
+  max-width: calc(100% - 24px);
+}
+
+.filter-chip {
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #cbd8e8;
+  background: rgba(11, 17, 25, 0.92);
+  border: 1px solid rgba(64, 83, 110, 0.5);
+  cursor: pointer;
+}
+
+.filter-chip:hover { border-color: #7FE3D0; }
+.filter-chip.active { background: #7FE3D0; color: #0B1119; border-color: #7FE3D0; }
+.chip-exp { margin-left: 5px; font-size: 8px; font-weight: 800; color: #FFB829; }
+.filter-chip.active .chip-exp { color: #0B1119; }
+
+.signals-panel { margin: 8px 0 12px; padding: 8px 10px; border-radius: 8px; border: 1px dashed rgba(255, 184, 41, 0.45); background: rgba(255, 184, 41, 0.05); }
+.signals-table { width: 100%; font-size: 11px; border-collapse: collapse; }
+.signals-table td { padding: 2px 4px; border-top: 1px solid rgba(64, 83, 110, 0.3); color: #cbd8e8; }
+.signals-table td:first-child { color: #8b99b3; text-transform: capitalize; }
+.signals-table td:last-child { text-align: right; font-variant-numeric: tabular-nums; }

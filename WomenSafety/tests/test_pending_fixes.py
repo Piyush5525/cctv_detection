@@ -113,8 +113,9 @@ class CallTextTests(unittest.TestCase):
     def test_primary_unavailable_and_no_prefix_outside_demo(self):
         settings.DEMO_MODE = False
         try:
-            text = build_call_message({**self.INCIDENT, "category": "snatching"}, {"assignments": []})
-            self.assertEqual(text, "Snatching detected at MI Road, Jaipur. Nearest police station: unavailable.")
+            # Snatching is an experimental detector: the call text now says so, with confidence and threshold.
+            text = build_call_message({**self.INCIDENT, "category": "snatching", "detection": {"peak_confidence": 0.81, "threshold_applied": 0.7}}, {"assignments": []})
+            self.assertEqual(text, "EXPERIMENTAL detection, confidence 0.81, threshold 0.70. Snatching detected at MI Road, Jaipur. Nearest police station: unavailable.")
         finally:
             settings.DEMO_MODE = True
 

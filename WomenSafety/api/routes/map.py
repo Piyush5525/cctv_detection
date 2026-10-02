@@ -63,6 +63,7 @@ async def get_map_groups(
                     "thumbnail_url": f"/api/v1/evidence/v2/{i['camera_id']}/"
                                       f"{i['event_start'][:10]}/{i['incident_id']}/thumbnail.jpg",
                     "peak_confidence": i["detection"]["peak_confidence"],
+                    "experimental": bool(i["detection"].get("experimental", False)),
                     "status": i["status"],
                 }
                 for i in page

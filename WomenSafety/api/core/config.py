@@ -210,6 +210,64 @@ class Settings(BaseSettings):
     NOTIFICATION_RETRY_BACKOFF_S: float = 2.0
     TELEGRAM_VIDEO_MAX_BYTES: int = 50 * 1024 * 1024  # Telegram's own bot-API upload limit
 
+    # --- Action detectors: fall / violence / snatch (api/services/action_detectors/) ---
+    # EXPERIMENTAL. They only run on a camera whose "detectors" list (config/cameras.json, or the env
+    # override DETECTORS_<CAMERA_ID>) names them. All thresholds live here; none is shared with fire/crash.
+    AUTO_CALL_CATEGORIES: str = "fire,crash"   # only these may be called automatically; everything else needs "Escalate now"
+    ACTION_COOLDOWN_S: float = 60.0            # outbound cooldown per camera+experimental category (>= the generic one)
+    ACTION_POSE_INTERVAL_S: float = 0.25       # shared pose pass cadence (one YOLOv8n-pose pass feeds all action detectors)
+    ACTION_POSE_MODEL: str = "yolov8n-pose.pt"
+    ACTION_POSE_CONF: float = 0.35
+    ACTION_MIN_PERSON_H_FRAC: float = 0.12     # ignore persons whose box is shorter than this fraction of the frame height
+    ACTION_TRACK_MAX_MISSING_S: float = 1.5
+    MIN_USEFUL_FPS: float = 2.0                # fire/crash effective fps below this => action detectors back off
+    ACTION_MAX_THROTTLE: int = 8               # max interval multiplier while throttled
+    # fall
+    FALL_WINDOW_S: float = 6.0
+    FALL_INTERVAL_S: float = 0.25
+    FALL_UPRIGHT_ANGLE_DEG: float = 35.0       # torso angle from vertical below this = upright
+    FALL_DOWN_ANGLE_DEG: float = 60.0          # torso angle at/above this = horizontal
+    FALL_ASPECT_FLIP: float = 1.1              # box width/height at/above this = lying
+    FALL_TRANSITION_S: float = 1.2             # upright -> down must happen within this (slower = lying down on purpose)
+    FALL_HEAD_DROP_FRAC: float = 0.35          # head height drop, in standing box heights
+    FALL_HIP_DROP_FRAC: float = 0.20           # hip height drop (bending forward drops the head, not the hips)
+    FALL_DROP_VEL: float = 0.5                 # peak drop velocity, standing heights per second
+    FALL_STAY_DOWN_S: float = 2.0
+    FALL_SCORE_THRESHOLD: float = 0.6
+    FALL_CONFIRM_N: int = 2
+    FALL_CONFIRM_M: int = 3
+    FALL_END_GAP_S: float = 6.0
+    FALL_MERGE_S: float = 30.0
+    # violence (CLIP zero-shot base score, gated)
+    VIOLENCE_WINDOW_S: float = 3.0
+    VIOLENCE_INTERVAL_S: float = 1.0           # CLIP cadence, only evaluated when the gates pass
+    VIOLENCE_PROXIMITY: float = 1.2            # persons closer than this many body heights count as "close"
+    VIOLENCE_MOTION_THRESHOLD: float = 1.0     # limb motion energy (body heights / s, torso motion removed)
+    VIOLENCE_SUSTAIN_FRAC: float = 0.5         # fraction of the window that must exceed the motion threshold
+    VIOLENCE_MIN_SPAN_S: float = 1.5           # minimum window coverage before the gate can open
+    VIOLENCE_CLIP_THRESHOLD: float = 0.28      # CLIP cosine score for a violence/fight label
+    VIOLENCE_SMOOTH_N: int = 3
+    VIOLENCE_SMOOTH_M: int = 5
+    VIOLENCE_CONFIRM_N: int = 2
+    VIOLENCE_CONFIRM_M: int = 3
+    VIOLENCE_END_GAP_S: float = 6.0
+    VIOLENCE_MERGE_S: float = 30.0
+    # snatch (tracking prototype, high thresholds)
+    SNATCH_WINDOW_S: float = 3.0
+    SNATCH_INTERVAL_S: float = 0.25
+    SNATCH_FAR: float = 1.8                    # distance (body heights) before the approach
+    SNATCH_NEAR: float = 0.8                   # distance at contact
+    SNATCH_APPROACH_S: float = 1.5             # far -> near within this = sudden approach
+    SNATCH_FLEE_SPEED: float = 2.5             # runner speed after contact, body heights per second
+    SNATCH_ACCEL_RATIO: float = 2.0            # flee speed / approach speed
+    SNATCH_FLEE_S: float = 1.5                 # flee must develop within this after contact
+    SNATCH_SEPARATE: float = 1.5               # separation reached (body heights)
+    SNATCH_SCORE_THRESHOLD: float = 0.7
+    SNATCH_CONFIRM_N: int = 2
+    SNATCH_CONFIRM_M: int = 3
+    SNATCH_END_GAP_S: float = 6.0
+    SNATCH_MERGE_S: float = 30.0
+
     class Config:
         case_sensitive = True
         env_file = str(ENV_FILE)

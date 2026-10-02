@@ -60,6 +60,7 @@ def _category_from_class_name(name: str) -> Category:
         "violence": Category.ASSAULT, "fight": Category.ASSAULT,
         "snatch": Category.SNATCHING, "snatching": Category.SNATCHING,
         "fall": Category.FALL,
+        "assault": Category.ASSAULT,
         "women_safety": Category.WOMEN_SAFETY,
     }
     return mapping.get(name.lower(), Category.OTHER)
@@ -131,6 +132,8 @@ def handle_finished_event(camera_id: str, ev: ActiveEvent, evidence_raw: dict, s
                 threshold_applied=ev.threshold_applied,
                 frames_confirmed=ev.confirmations,
                 best_frame_bbox=bboxes,
+                experimental=getattr(ev, "experimental", False),
+                signals=dict(getattr(ev, "signals", None) or {}),
             ),
             evidence=Evidence(
                 best_frame_path=evidence_raw["best_frame_path"],

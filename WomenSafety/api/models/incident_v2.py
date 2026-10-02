@@ -63,6 +63,11 @@ class Detection(BaseModel):
     threshold_applied: float
     frames_confirmed: str  # "N of M", e.g. "3 of 5"
     best_frame_bbox: List[BBox] = Field(default_factory=list)
+    # Action detectors (fall / violence / snatch) only. `experimental` drives the dashboard badge, the Telegram/call
+    # wording and the alert policy (no automatic call). `signals` are the scalar signals that fired on the peak
+    # frame (e.g. drop velocity, stay-down seconds) -- never keypoints or any biometric data.
+    experimental: bool = False
+    signals: dict = Field(default_factory=dict)
 
 
 class Evidence(BaseModel):

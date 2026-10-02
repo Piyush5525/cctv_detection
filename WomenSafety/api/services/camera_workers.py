@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -13,6 +14,8 @@ from api.core.config import settings
 from api.models.camera import all_cameras, get_camera, resolve_stream_source, stream_reachable
 from api.models.incident_v2 import SourceKind
 from api.services import incident_service_v2 as incidents
+from api.services.action_detectors import ACTION_NAMES, ActionEngine
+from api.services.action_detectors.pose import pose_weights_path
 from api.services.detector_interface import DetectorRegistry
 from api.services.event_capture import EventCapturePipeline
 from api.services.frame_sampler import RealtimeFrameGate
@@ -77,6 +80,44 @@ class CameraWorker:
         self.thread = threading.Thread(target=self._process_loop, name=f"camera-proc-{camera.camera_id}", daemon=True)
         self.gate = RealtimeFrameGate(settings.SAMPLE_INTERVAL_S, label=camera.camera_id)
         self.pipeline = EventCapturePipeline(camera.camera_id, self._incident_ready, self._quarantine)
+        # Per-camera detector list (config/cameras.json "detectors", env override DETECTORS_<CAMERA_ID>). Default is
+        # fire+crash, exactly the previous behaviour; an action detector never runs unless it is listed.
+        self.detectors = camera.active_detectors
+        self._fc_times: deque = deque(maxlen=64)   # fire/crash sampled-frame times, for the effective fps the throttle reads
+        self.action: Optional[ActionEngine] = None
+        self.action_pipelines: dict = {}
+        names = [n for n in self.detectors if n in ACTION_NAMES]
+        if names:
+            self._init_action(names)
+
+    def _init_action(self, names):
+        engine = ActionEngine(self.camera.camera_id, names, on_verdict=self._action_verdict)
+        if not engine.enabled:
+            print(f"[{self.camera.camera_id}] action detectors {names} requested but the pose model is unavailable; skipped")
+            return
+        path = pose_weights_path()
+        import hashlib
+        self._pose_weights = (str(path), hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None)
+        for d in engine.detectors:
+            # one pipeline per action detector (own confirmation / end / merge settings), sharing this camera's ring buffer
+            self.action_pipelines[d.name] = EventCapturePipeline(
+                self.camera.camera_id, self._incident_ready, self._quarantine,
+                confirm_n=d.confirm_n, confirm_m=d.confirm_m, end_gap_s=d.end_gap_s, merge_s=d.merge_s,
+                shared_pre_buffer=self.pipeline.pre_buffer, overlay_best_frame=True)
+        self.action = engine
+        print(f"[{self.camera.camera_id}] EXPERIMENTAL action detectors on: {[d.name for d in engine.detectors]}")
+
+    def _action_verdict(self, detector, result, frame, ts, video_offset_s):
+        file, sha = self._pose_weights if detector.name != "violence" else (None, None)
+        self.action_pipelines[detector.name].feed_detection(
+            frame, ts, detector.category if result.detected else None, result.score if result.detected else 0.0,
+            result.boxes if result.detected else [], detector.detector_source, detector.model_name, detector.threshold,
+            weights_file=file, weights_sha256=sha, video_offset_s=video_offset_s,
+            signals=result.signals, experimental=True)
+
+    def _fire_crash_fps(self, now: float) -> Optional[float]:
+        recent = [t for t in self._fc_times if now - t <= 8.0]
+        return (len(recent) - 1) / (recent[-1] - recent[0]) if len(recent) >= 3 and recent[-1] > recent[0] else None
 
     def start(self):
         self.reader.start(); self.thread.start()
@@ -107,6 +148,9 @@ class CameraWorker:
                 "status": self.status, "last_frame_age_s": age,
                 "effective_fps": round(self.gate.effective_fps, 2), "frames_read": self.frames_read,
                 "latency_s": None if self.latency_s is None else round(self.latency_s, 3), "error": self.error,
+                "detectors": self.detectors,
+                "action_detectors": None if self.action is None else {"experimental": True, "throttle": self.action.throttle,
+                                                                       "pose_passes": self.action.pose_passes, "settings": self.action.describe()},
                 **location_fields(self.camera, resolve_location(self.camera))}
 
     def _incident_ready(self, camera_id, ev, evidence):
@@ -159,13 +203,23 @@ class CameraWorker:
                 original, captured, last_seq = self._latest
             now, ts = time.time(), datetime.now(timezone.utc)
             self.pipeline.add_raw_frame(original, ts)
+            for action_pipeline in self.action_pipelines.values():
+                action_pipeline.add_raw_frame(original, ts)
+            ran = False
             if self.gate.should_process(now):
-                detection = self._detect(original)
-                self.pipeline.feed_detection(original, ts, **detection)
-                with self._cond: self._last_boxes = detection["boxes"]
+                ran = True
+                if any(n in self.detectors for n in ("fire", "crash")):
+                    detection = self._detect(original)
+                    self.pipeline.feed_detection(original, ts, **detection)
+                    self._fc_times.append(now)
+                    with self._cond: self._last_boxes = detection["boxes"]
                 age = time.monotonic() - captured
                 self.latency_s = age if self.latency_s is None else 0.8 * self.latency_s + 0.2 * age
-            else:
+            if self.action is not None:
+                # Action detectors keep their own cadence (a no-op between passes) and back off if fire/crash fps drops.
+                self.action.update_throttle(self._fire_crash_fps(now) if any(n in self.detectors for n in ("fire", "crash")) else None, now)
+                ran = bool(self.action.process(original, now, ts)) or ran
+            if not ran:
                 self._stop.wait(0.005)
 
     def _detect(self, original):
@@ -175,6 +229,8 @@ class CameraWorker:
         best = None
         with self.detector_lock:
             for detector in self.registry.all():
+                if detector.name not in self.detectors:
+                    continue
                 result = detector.detect(frame)
                 if result.detection and result.confidence >= settings.FIRE_CRASH_CONFIDENCE_FLOOR and (best is None or result.confidence > best[1].confidence):
                     best = (detector, result)

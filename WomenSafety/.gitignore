@@ -50,3 +50,10 @@ data/camera_check_CAM-001.jpg
 
 # hand-made config backups (may contain LAN addresses)
 config/*.bak
+
+# Demo clips obtained from other people stay local (see data/demo/SOURCES.md)
+data/demo/*.mp4
+data/demo/**/*.mp4
+data/demo/_originals/
+demo/*.mp4*
+discovery/cache/

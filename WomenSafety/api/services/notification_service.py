@@ -25,7 +25,27 @@ from api.services.safety_guard import alerts_enabled_check, check_call_allowed, 
 CALL_DISPATCH_URL = "https://omnidim.io/api/v1/calls/dispatch"
 
 
-CATEGORY_SPOKEN = {"road_accident": "Crash", "crash": "Crash"}
+CATEGORY_SPOKEN = {"road_accident": "Crash", "crash": "Crash", "assault": "Violence", "snatching": "Snatching"}
+EXPERIMENTAL_CATEGORIES = frozenset({"fall", "assault", "snatching"})   # action detectors (api/services/action_detectors)
+EXPERIMENTAL_TAG = "EXPERIMENTAL"
+
+
+def is_experimental(incident: dict) -> bool:
+    return bool((incident.get("detection") or {}).get("experimental")) or str(incident.get("category")) in EXPERIMENTAL_CATEGORIES
+
+
+def auto_call_allowed(category: str) -> bool:
+    """Alert policy: only AUTO_CALL_CATEGORIES (default fire, crash) may ever be called automatically.
+    Everything else -- every experimental detector -- is dashboard + Telegram only; a call needs the operator's
+    "Escalate now". road_accident is this project's name for a crash."""
+    wanted = {c.strip().lower() for c in settings.AUTO_CALL_CATEGORIES.split(",") if c.strip()}
+    cat = str(category).lower()
+    return cat in wanted or (cat == "road_accident" and "crash" in wanted)
+
+
+def experimental_note(incident: dict) -> str:
+    d = incident.get("detection") or {}
+    return f"{EXPERIMENTAL_TAG} detection, confidence {float(d.get('peak_confidence', 0.0)):.2f}, threshold {float(d.get('threshold_applied', 0.0)):.2f}."
 
 
 def build_call_message(incident: dict, plan: Optional[dict]) -> str:
@@ -45,6 +65,8 @@ def build_call_message(incident: dict, plan: Optional[dict]) -> str:
     else:
         nearest = f"Nearest {label}: unavailable."
     body = f"{category} detected at {place}. {nearest}"
+    if is_experimental(incident):
+        body = f"{experimental_note(incident)} {body}"
     prefix = settings.CALL_MESSAGE_PREFIX.strip() if settings.DEMO_MODE else ""
     return f"{prefix} {body}".strip()
 
@@ -142,8 +164,10 @@ class NotificationService:
             self._record(incident.incident_id, "dispatch", "failed", "internal", "notification queue is full")
             return False
 
-    def _cooldown_seconds(self) -> float:
-        return settings.DEMO_COOLDOWN_S if settings.DEMO_MODE else settings.NOTIFICATION_COOLDOWN_S
+    def _cooldown_seconds(self, category: Optional[str] = None) -> float:
+        base = settings.DEMO_COOLDOWN_S if settings.DEMO_MODE else settings.NOTIFICATION_COOLDOWN_S
+        # experimental detectors are noisier: never a shorter cooldown than ACTION_COOLDOWN_S (per camera + category)
+        return max(base, settings.ACTION_COOLDOWN_S) if category in EXPERIMENTAL_CATEGORIES else base
 
     def _cooldown_active(self, key: tuple) -> bool:
         """True if an outbound alert for this camera+category went out within
@@ -151,7 +175,7 @@ class NotificationService:
         now = time.monotonic()
         with self._lock:
             previous = self._last_by_key.get(key)
-            if previous is not None and now - previous < self._cooldown_seconds():
+            if previous is not None and now - previous < self._cooldown_seconds(key[1] if len(key) > 1 else None):
                 return True
             self._last_by_key[key] = now
             return False
@@ -198,8 +222,9 @@ class NotificationService:
         import telebot
         markup = telebot.types.InlineKeyboardMarkup()  # empty keyboard == buttons removed
         buttons = []
+        experimental = str(state.get("head", "")).startswith(EXPERIMENTAL_TAG)  # also true after an API restart (rebuilt from the message)
         if not state["ack"] and not state["fp"]:
-            buttons.append(telebot.types.InlineKeyboardButton("Acknowledge (stops auto-call)", callback_data=f"incident:{incident_id}:confirm"))
+            buttons.append(telebot.types.InlineKeyboardButton("Acknowledge" if experimental else "Acknowledge (stops auto-call)", callback_data=f"incident:{incident_id}:confirm"))
         if not state["fp"]:
             buttons.append(telebot.types.InlineKeyboardButton("False alarm", callback_data=f"incident:{incident_id}:false_alarm"))
         if buttons:
@@ -422,6 +447,12 @@ class NotificationService:
             self._record(incident_id, "call", "suppressed", "configured demo phone", "suppressed: cooldown")
             return
         self._send_telegram(incident, plan)
+        if not auto_call_allowed(category):
+            # Alert policy: dashboard + Telegram only. No timer, no call -- the call happens ONLY if an operator
+            # presses "Escalate now" (process_press -> _send_call_if_still_needed(source="operator")).
+            self._record(incident_id, "call", "manual_only", "configured demo phone",
+                         f"{EXPERIMENTAL_TAG if is_experimental(incident) else category}: no automatic call; operator 'Escalate now' only")
+            return
         # A high-confidence detection bypasses the wait. Otherwise the call
         # remains an escalation only if no operator has dismissed it.
         confidence = float(incident.get("detection", {}).get("peak_confidence", 0.0))
@@ -454,15 +485,20 @@ class NotificationService:
             self._record(incident_id, "telegram", "failed", "configured demo chat", "missing TELEGRAM_BOT_TOKEN")
             return False
         nearest = self._nearest_lines(plan)
-        head = (f"Incident: {incident['category']}\nCamera: {incident['camera_name']}\nPlace: {incident['place_text']}\n"
+        experimental = is_experimental(incident)
+        shown = CATEGORY_SPOKEN.get(str(incident["category"]), str(incident["category"])) if experimental else incident["category"]
+        head = ((f"{EXPERIMENTAL_TAG} detection - verify before acting\n" if experimental else "") +
+                f"Incident: {shown}\nCamera: {incident['camera_name']}\nPlace: {incident['place_text']}\n"
                 f"Time: {incident.get('detected_at', _now())}\nPeak confidence: {incident['detection']['peak_confidence']:.2f}\n"
                 f"Threshold: {incident['detection']['threshold_applied']:.2f}")
         services = nearest or ["unavailable"]
-        caption = compose_caption(head, services, [], footer="Tap Acknowledge to stop the automatic call; False alarm to dismiss it.")
+        footer = ("Experimental detector: no automatic call. Press Escalate now to place a call; False alarm to dismiss it." if experimental
+                  else "Tap Acknowledge to stop the automatic call; False alarm to dismiss it.")
+        caption = compose_caption(head, services, [], footer=footer)
         try:
             import telebot
             markup = telebot.types.InlineKeyboardMarkup()
-            markup.row(telebot.types.InlineKeyboardButton("Acknowledge (stops auto-call)", callback_data=f"incident:{incident_id}:confirm"),
+            markup.row(telebot.types.InlineKeyboardButton("Acknowledge" if experimental else "Acknowledge (stops auto-call)", callback_data=f"incident:{incident_id}:confirm"),
                        telebot.types.InlineKeyboardButton("False alarm", callback_data=f"incident:{incident_id}:false_alarm"))
             markup.row(telebot.types.InlineKeyboardButton("Escalate now", callback_data=f"incident:{incident_id}:escalate"))
         except Exception:

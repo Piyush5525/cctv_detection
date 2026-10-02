@@ -125,6 +125,34 @@ class ActiveEvent:
     weights_file: Optional[str] = None
     weights_sha256: Optional[str] = None
     threshold_applied: float = 0.0
+    # Action detectors (fall/violence/snatch): the signals that fired on the peak-score frame (plain numbers only,
+    # never keypoints), the peak score so far, and the experimental flag. Fire/crash leave these at the defaults.
+    signals: dict = field(default_factory=dict)
+    peak_score: float = 0.0
+    experimental: bool = False
+
+
+# COCO skeleton for the best-frame overlay (drawn into an image only; keypoints are never persisted as data).
+SKELETON_EDGES = [(5, 6), (5, 7), (7, 9), (6, 8), (8, 10), (5, 11), (6, 12), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16), (0, 5), (0, 6)]
+
+
+def _draw_overlay(img: np.ndarray, boxes: list) -> None:
+    for b in boxes:
+        try:
+            x1, y1, x2, y2 = [int(v) for v in b["box"]]
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            cv2.putText(img, f"{b['label']} {b['confidence']:.2f}" if "confidence" in b else b["label"],
+                        (x1, max(0, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            kp = b.get("keypoints")
+            if kp:
+                for a, c in SKELETON_EDGES:
+                    if kp[a][2] >= 0.3 and kp[c][2] >= 0.3:
+                        cv2.line(img, (int(kp[a][0]), int(kp[a][1])), (int(kp[c][0]), int(kp[c][1])), (0, 255, 255), 2)
+                for x, y, c in kp:
+                    if c >= 0.3:
+                        cv2.circle(img, (int(x), int(y)), 3, (0, 200, 0), -1)
+        except Exception:
+            continue
 
 
 def _sha256_file(path: Path) -> str:
@@ -185,13 +213,30 @@ class EventCapturePipeline:
         camera_id: str,
         on_incident_ready: Callable[[str, ActiveEvent, dict], None],
         on_quarantine: Optional[Callable[[str, str, str, Optional[datetime], Optional[dict]], None]] = None,
+        *,
+        confirm_n: Optional[int] = None,
+        confirm_m: Optional[int] = None,
+        end_gap_s: Optional[float] = None,
+        merge_s: Optional[float] = None,
+        shared_pre_buffer: Optional[RingBuffer] = None,
+        overlay_best_frame: bool = False,
     ):
+        """The keyword-only arguments exist for the action detectors (one pipeline per detector per camera):
+        per-detector confirmation/end/merge settings, a ring buffer shared with the camera's main pipeline (whose
+        owner keeps filling it -- this pipeline then never adds to it), and best_frame.jpg carrying the box/skeleton
+        overlay. Left at their defaults, behaviour is exactly the original (fire/crash)."""
         self.camera_id = camera_id
         self.on_incident_ready = on_incident_ready
         self.on_quarantine = on_quarantine
+        self.confirm_n = settings.EVENT_CONFIRM_N if confirm_n is None else confirm_n
+        self.confirm_m = settings.EVENT_CONFIRM_M if confirm_m is None else confirm_m
+        self.end_gap_s = settings.EVENT_END_GAP_SECONDS if end_gap_s is None else end_gap_s
+        self.merge_s = settings.EVENT_MERGE_SECONDS if merge_s is None else merge_s
+        self.overlay_best_frame = overlay_best_frame
 
-        self.pre_buffer = RingBuffer(settings.PRE_EVENT_SECONDS)
-        self._recent_verdicts: Deque[tuple] = deque(maxlen=settings.EVENT_CONFIRM_M)  # (is_hit, confidence, boxes, category)
+        self._owns_buffer = shared_pre_buffer is None
+        self.pre_buffer = shared_pre_buffer or RingBuffer(settings.PRE_EVENT_SECONDS)
+        self._recent_verdicts: Deque[tuple] = deque(maxlen=self.confirm_m)  # (is_hit, confidence, boxes, category)
         self._active: Optional[ActiveEvent] = None
         self._last_ended: dict[str, datetime] = {}  # category -> event_end, for merge-window check
         self._post_window_until: Optional[datetime] = None
@@ -221,7 +266,8 @@ class EventCapturePipeline:
         pipeline) updates that exact list entry in place with the real
         detector verdict, rather than appending a second, duplicate
         entry for one real frame."""
-        self.pre_buffer.add(frame, ts)
+        if self._owns_buffer:
+            self.pre_buffer.add(frame, ts)
         with self._lock:
             if self._active is not None:
                 sample = FrameSample.from_ndarray(frame, ts, 0.0, [], video_offset_s)
@@ -241,6 +287,8 @@ class EventCapturePipeline:
         weights_file: Optional[str] = None,
         weights_sha256: Optional[str] = None,
         video_offset_s: Optional[float] = None,
+        signals: Optional[dict] = None,
+        experimental: bool = False,
     ):
         """Call once per SAMPLED frame only (see api/services/frame_sampler.py),
         always AFTER add_raw_frame() for that same frame -- this is
@@ -283,6 +331,9 @@ class EventCapturePipeline:
                     self._start_event(category, ts, frame, confidence, boxes,
                                        detector_source, model_name, threshold_applied,
                                        weights_file, weights_sha256, video_offset_s)
+                    self._active.experimental = experimental
+                    self._active.signals = dict(signals or {})
+                    self._active.peak_score = confidence
                 return
 
             # An active event is running. If this sampled frame was the
@@ -302,19 +353,22 @@ class EventCapturePipeline:
 
             if category == self._active.category and is_hit:
                 self._active.last_detection_at = ts
+                if confidence > self._active.peak_score:
+                    self._active.peak_score = confidence
+                    self._active.signals = dict(signals or {})
 
             gap = (ts - self._active.last_detection_at).total_seconds()
             duration = (ts - self._active.event_start).total_seconds()
-            if gap >= settings.EVENT_END_GAP_SECONDS or duration >= settings.MAX_EVENT_SECONDS:
+            if gap >= self.end_gap_s or duration >= settings.MAX_EVENT_SECONDS:
                 self._end_event(ts)
 
     def _confirmed(self, category: str) -> bool:
         hits = sum(1 for is_hit, _, _, c in self._recent_verdicts if is_hit and c == category)
-        return hits >= settings.EVENT_CONFIRM_N
+        return hits >= self.confirm_n
 
     def _try_merge(self, category: str, ts: datetime) -> bool:
         last_end = self._last_ended.get(category)
-        return last_end is not None and (ts - last_end).total_seconds() <= settings.EVENT_MERGE_SECONDS
+        return last_end is not None and (ts - last_end).total_seconds() <= self.merge_s
 
     def _start_event(self, category, ts, frame, confidence, boxes, detector_source, model_name,
                       threshold_applied, weights_file, weights_sha256, video_offset_s=None):
@@ -421,22 +475,19 @@ class EventCapturePipeline:
         best_decoded = best.decode()
 
         best_frame_path = day_dir / "best_frame.jpg"
-        # best.frame is already JPEG bytes at JPEG_QUALITY -- write it
-        # directly rather than decode+re-encode (avoids a second lossy
-        # generation loss on the one frame that matters most).
-        best_frame_path.write_bytes(best.frame)
-
         annotated = best_decoded.copy()
-        for b in best.boxes:
-            try:
-                x1, y1, x2, y2 = [int(v) for v in b["box"]]
-                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                cv2.putText(annotated, f"{b['label']} {b['confidence']:.2f}" if "confidence" in b else b["label"],
-                            (x1, max(0, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-            except Exception:
-                continue
+        _draw_overlay(annotated, best.boxes)
         annotated_path = day_dir / "annotated_frame.jpg"
         cv2.imwrite(str(annotated_path), annotated)
+        if self.overlay_best_frame:
+            # Action detectors: the peak-score frame WITH the box/skeleton overlay is the best frame
+            # (it is what Telegram and the dashboard show first).
+            best_frame_path.write_bytes(_encode_jpeg(annotated))
+        else:
+            # best.frame is already JPEG bytes at JPEG_QUALITY -- write it
+            # directly rather than decode+re-encode (avoids a second lossy
+            # generation loss on the one frame that matters most).
+            best_frame_path.write_bytes(best.frame)
 
         h, w = best_decoded.shape[:2]
         thumb_w = THUMBNAIL_WIDTH

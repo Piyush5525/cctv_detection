@@ -1,0 +1,79 @@
+# Action detectors (fall, violence, snatch): honest status
+
+**All three are EXPERIMENTAL.** They run in the v2 event pipeline (ring buffer, event lifecycle, clip, quarantine, evidence, notification service) but only on a camera whose detector list names them, and they never place a call by themselves.
+
+| | Fall | Violence | Snatch |
+|---|---|---|---|
+| Incident category | `fall` (dispatch: hospital) | `assault`, shown as "Violence" (police) | `snatching` (police) |
+| Method | YOLOv8n-pose keypoints + rules (no training) | existing CLIP zero-shot, gated by pose proximity + limb motion, N-of-M smoothing | tracked person boxes + rules (no pose needed) |
+| Tested on real footage | **No fall footage exists in the repo.** Only synthetic pose sequences and 8 non-fall clips (negatives) | 2 fight clips (both missed) + 8 negatives | 3 snatch clips (all missed) + 7 negatives |
+| Verdict | Logic verified on synthetic data only; real-world accuracy **unknown** | **Does not detect the available fight clips** (CLIP never labels them violent) | **Does not detect the available snatch clip** (the rules expect a sprint; the clip is a walk-off) |
+
+## How to turn them on
+
+`config/cameras.json` per camera: `"detectors": ["fire", "crash", "fall"]` (default `["fire","crash"]`), or the env override `DETECTORS_<CAMERA_ID>` with `-` as `_`, e.g. `DETECTORS_CAM_001=fire,crash,fall,violence,snatch`. Unknown names are ignored. Nothing else runs an action detector; with the default list no pose/CLIP model is even loaded.
+
+## Alert policy (safety)
+
+- `AUTO_CALL_CATEGORIES` defaults to `fire,crash`. Fall / violence / snatching: dashboard + Telegram only, with the existing Acknowledge / False alarm / Escalate now buttons. **No automatic call**: no timer is scheduled; the timeline shows `call: manual_only`. The call happens only when an operator presses **Escalate now**.
+- The Telegram caption starts with "EXPERIMENTAL detection - verify before acting" and carries the peak confidence and the threshold; the spoken call text starts "EXPERIMENTAL detection, confidence 0.xx, threshold 0.xx."
+- Unchanged and still enforced on the Escalate-now path: DEMO_MODE allowlist, hard-blocked emergency numbers (100/101/102/108/112), `MAX_CALLS_PER_HOUR`, `ALERTS_ENABLED`. Cooldown is per camera + category; experimental categories use at least `ACTION_COOLDOWN_S` (60 s).
+- The legacy alert path (`main.py`, `LEGACY_DETECTORS_ENABLED=false`) is untouched and stays off; these detectors go only through the notification service.
+- Stored data: the incident keeps scalar `signals` only (e.g. drop velocity, stay-down seconds). Keypoints exist in memory while a window is evaluated and as a drawn skeleton in the overlay image; they are never written as data (a test asserts the stored record has no `keypoints`).
+
+## Thresholds (all in `api/core/config.py`, overridable by env)
+
+Shared: `ACTION_POSE_INTERVAL_S=0.25` (one YOLOv8n-pose pass per sampled frame, shared by all detectors), `ACTION_POSE_CONF=0.35`, `ACTION_MIN_PERSON_H_FRAC=0.12` (smaller persons ignored), `MIN_USEFUL_FPS=2.0`, `ACTION_MAX_THROTTLE=8`.
+
+**Fall** (window 6 s, evaluated every pose pass, confirm 2 of 3, end gap 6 s, merge 30 s). Upright = torso angle <= `FALL_UPRIGHT_ANGLE_DEG` 35; down = angle >= `FALL_DOWN_ANGLE_DEG` 60 or box width/height >= `FALL_ASPECT_FLIP` 1.1. Needs: upright -> down within `FALL_TRANSITION_S` 1.2; head drop >= `FALL_HEAD_DROP_FRAC` 0.35 and hip drop >= `FALL_HIP_DROP_FRAC` 0.20 standing heights; peak drop velocity >= `FALL_DROP_VEL` 0.5 heights/s; stay down >= `FALL_STAY_DOWN_S` 2.0; score >= `FALL_SCORE_THRESHOLD` 0.6 (0.30 velocity + 0.25 angle + 0.15 aspect flip + 0.30 stay-down). Latched until the person is upright for 2 samples or the track is gone for 2 s. Rejects (tested, each rule proven active by a mutation test): sitting, crouching, bending (hip-drop rule), lying down on purpose (transition/velocity), a quick recovery (stay-down rule), a person who enters already lying.
+
+**Violence** (window 3 s, CLIP every `VIOLENCE_INTERVAL_S` 1 s, only when the gates pass). Gates: >= 2 persons, a pair within `VIOLENCE_PROXIMITY` 1.2 body heights (in at least half of the window), torso-relative limb motion energy >= `VIOLENCE_MOTION_THRESHOLD` 1.0 body heights/s for >= `VIOLENCE_SUSTAIN_FRAC` 0.5 of the window, window span >= 1.5 s. CLIP: violence/fight label with cosine >= `VIOLENCE_CLIP_THRESHOLD` 0.28. Smoothing `VIOLENCE_SMOOTH_N` 3 of `VIOLENCE_SMOOTH_M` 5; pipeline confirm 2 of 3. Reported score = CLIP cosine (a low-valued scale: 0.28-0.35 is typical).
+
+**Snatch** (window 3 s, every pose pass, confirm 2 of 3). Pair (target, runner), distances in body heights: separation from >= `SNATCH_FAR` 1.8 to <= `SNATCH_NEAR` 0.8 within `SNATCH_APPROACH_S` 1.5 s; after contact within `SNATCH_FLEE_S` 1.5 s the runner reaches >= `SNATCH_FLEE_SPEED` 2.5 heights/s and >= `SNATCH_ACCEL_RATIO` 2.0x its approach speed; separation >= `SNATCH_SEPARATE` 1.5, moving away, target's speed under half the runner's; score >= `SNATCH_SCORE_THRESHOLD` 0.7.
+
+## Lite evaluation (PRELIMINARY, TINY SAMPLE, not accuracy)
+
+`python scripts/eval_action_detectors.py` runs the real engine (real pose + CLIP) in deterministic video time over the clips already in the repo, applying the same N-of-M confirmation as the pipeline. No data was collected; there is no per-frame ground truth. "Seconds to detect" = from clip start, and is n/a because nothing was detected.
+
+| Clip (length) | Expected | Fall | Violence | Snatch | False alarms |
+|---|---|---|---|---|---|
+| data/office_fight.mp4 (13.6 s) | violence | no (peak 0.26) | **missed** (gate opened 5x, CLIP never said violent) | no | 0 |
+| scraped street_fight (58.6 s) | violence | no | **missed** (CLIP "Unknown" ~0.21 throughout; gate open 6x) | no | 0 |
+| testing/snatch.mp4 (76.6 s) | snatch | no | no | **missed** | 0 |
+| snatch_detection_system/data/snatch.mp4 (same footage) | snatch | no | no | **missed** | 0 |
+| snatch_detection_system/data/snatch2.mp4 (86.3 s) | snatch | no | no | **missed** | 0 |
+| data/crash.mp4, dashcam accident, fire.mp4, 2 building-fire CCTV clips | none | no (best candidate score 0.66 on one fire clip, below threshold / rules) | no | no | **0 of 5 clips** |
+
+Totals: 5 positive clips, 0 detections; 5 negative clips, 0 false alarms. There is **no normal-traffic or normal-pedestrian clip** in the repo, and **no fall clip at all**, so false-alarm rates for fall on ordinary people and its recall on real falls are unmeasured.
+
+Why they missed:
+- Violence: the gates behave (they open on the office fight, stay shut on single people / far apart / still), but CLIP top-1 labels the fight frames "person walking in office" or below its 0.28 threshold. The zero-shot label is the weak link.
+- Snatch: `testing/snatch.mp4` (a man approaches a woman at a lift, brief contact around t = 32 s, they part) has a peak person speed of about 1.6 body heights/s and a contact approach slower than "sudden". A sensitivity run with deliberately relaxed thresholds (window 5 s, far 1.4, approach 3 s, flee speed 1.2, ratio 1.5, separation 0.8) still scored only 0.66 (flee 0.66 heights/s, ratio 1.33); thresholds loose enough to catch it would also fire on ordinary walking. I did not tune the defaults to this one clip.
+
+## Performance (this laptop CPU; `scripts/measure_action_perf.py`, 40 s per scenario after 10 s warm-up, looping sample videos)
+
+Pose pass 46-108 ms per pass on these clips (most about 50-70 ms). Fire/crash effective fps per camera (SAMPLE_INTERVAL_S 0.25 => ceiling 4 fps):
+
+| Cameras | fire+crash only | all five detectors | change | CPU (share of machine) | peak RSS |
+|---|---|---|---|---|---|
+| 1 | 3.65 fps | 3.72 fps | +2% | 24.5% -> 27.4% | 594 -> 640 MB |
+| 2 | 2.17 / 2.20 fps | 2.10 / 2.10 fps | -4% | 51.0% -> 51.7% | 756 -> 773 MB |
+
+Both within the 25% limit, so no re-measurement was needed. On one camera the action detectors keep full cadence (pose 3.7/s). On two cameras fire/crash alone already sits near `MIN_USEFUL_FPS` (2.0), so the guard throttled the action detectors to x8 (pose about 0.6/s per camera): fire/crash are protected, but at that rate fall (needs a stay-down confirmation) and snatch (needs about 4 samples across a contact) are effectively blind. **Practical limit on this machine: action detectors are only useful on one camera.**
+
+## Pretrained violence video classifier: checked, not downloaded or integrated
+
+| Candidate | License | Size | Notes |
+|---|---|---|---|
+| [Nikeytas/videomae-crime-detector-production-v1](https://huggingface.co/Nikeytas/videomae-crime-detector-production-v1) | MIT | 86.2M params (VideoMAE-base, about 345 MB fp32) | Fine-tuned on a 300-video UCF-Crime subset, binary violent crime / non-violent; reported 62.5% val / 66.7% test accuracy. 16 frames at 224x224 per clip. |
+| [OPear/videomae-large-finetuned-UCF-Crime](https://huggingface.co/OPear/videomae-large-finetuned-UCF-Crime) | **CC-BY-NC-4.0 (non-commercial: not permissive)** | about 323M params (the page's "300GB" figure looks like an extraction error) | Reported 92.96% eval accuracy on UCF-Crime splits; many UCF-Crime classes, not just fighting. |
+
+Both would need a 16-frame window per evaluation. Expected latency (my estimate, not measured, nothing downloaded): VideoMAE-base on CPU roughly 1-3 s per 16-frame clip, large 3-5x that. So at best one evaluation every few seconds, only when the gate is open. The only permissively licensed candidate found is weak (about 63-67% accuracy on a small subset), so it would not obviously beat the current approach; it is **not integrated**. Gated clip evaluation (one VideoMAE call per second of open gate) is the natural slot if one is adopted later.
+
+## Known weak spots
+
+- No real fall footage anywhere in the repo: fall is validated on geometry only. Side-on / occluded / low-angle views, poor pose on a lying person (track IDs can reset, which ends the latch), people on stairs or sofas, and a child or pet are untested.
+- Violence recall on the available clips is zero; precision unknown. Pose misses people in crowds and at distance; the proximity gate and the "a person is a box at least 12% of the frame" rule hide distant fights.
+- Snatch only recognises a sprint-away; bag/chain grabs by a walker, bike-by snatches and a snatcher who arrives running are out of scope of the rules. At 4 Hz a 1-body-height jump per sample can break the tracker.
+- On two or more cameras the guard throttles action detectors to the point of blindness (see above).
+- Thresholds are initial values chosen from geometry, not calibrated on real data.

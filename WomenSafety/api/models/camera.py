@@ -37,6 +37,9 @@ CAMERAS_CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "cameras.
 INDIA_BBOX = {"min_lat": 6.0, "max_lat": 37.5, "min_lng": 68.0, "max_lng": 97.5}
 
 
+KNOWN_DETECTORS = frozenset({"fire", "crash", "fall", "violence", "snatch"})
+
+
 class Camera(BaseModel):
     camera_id: str
     name: str
@@ -52,6 +55,10 @@ class Camera(BaseModel):
     enabled: bool = True
     sample: bool = False
     field_of_view_note: Optional[str] = None
+    # Which detectors may run on this camera. Default is exactly the pre-existing behaviour (fire + crash).
+    # Action detectors (fall, violence, snatch) are EXPERIMENTAL and never run unless listed here or via
+    # the env override DETECTORS_<CAMERA_ID> (e.g. DETECTORS_CAM_001=fire,crash,fall).
+    detectors: list[str] = ["fire", "crash"]
 
     @model_validator(mode="before")
     @classmethod
@@ -66,6 +73,22 @@ class Camera(BaseModel):
                     data[f"{key}_ref"] = value
                     data[key] = None
         return data
+
+    @field_validator("detectors")
+    @classmethod
+    def _known_detectors(cls, v):
+        bad = [d for d in v if d not in KNOWN_DETECTORS]
+        if bad:
+            raise ValueError(f"unknown detector(s) {bad}; known: {sorted(KNOWN_DETECTORS)}")
+        return list(dict.fromkeys(v))
+
+    @property
+    def active_detectors(self) -> list[str]:
+        """The detector list after the env override (read each call). Unknown names in the env value are ignored."""
+        raw = os.environ.get("DETECTORS_" + re.sub(r"[^A-Za-z0-9]", "_", self.camera_id).upper())
+        if raw is None or not raw.strip():
+            return list(self.detectors)
+        return [d for d in dict.fromkeys(x.strip().lower() for x in raw.split(",")) if d in KNOWN_DETECTORS]
 
     @field_validator("name")
     @classmethod

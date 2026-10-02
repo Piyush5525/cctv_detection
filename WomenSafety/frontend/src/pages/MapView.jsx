@@ -70,8 +70,29 @@ const SEVERITY_RANK = {
   other: 0,
 }
 
+// Experimental action detectors (fall / violence / snatch): shown with an "Experimental" badge everywhere.
+const EXPERIMENTAL_CATEGORIES = new Set(['fall', 'assault', 'snatching'])
+const isExperimental = (inc) => !!(inc?.experimental || inc?.detection?.experimental || EXPERIMENTAL_CATEGORIES.has(inc?.category))
+const CATEGORY_NAMES = { assault: 'Violence', snatching: 'Snatch', fall: 'Fall' }
+const CATEGORY_ICONS = { fire: '🔥', road_accident: '🚗', assault: '👊', snatching: '👜', fall: '🧍' }
+const categoryIcon = (cat) => CATEGORY_ICONS[cat] || ''
+
 const categoryLabel = (cat) =>
-  (cat || 'unknown').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+  CATEGORY_NAMES[cat] || (cat || 'unknown').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+
+function ExperimentalBadge() {
+  return <span className="honesty-badge exp-badge" title="Experimental detector: verify before acting. It never calls automatically.">EXPERIMENTAL</span>
+}
+
+// Filter chips (category -> incident categories it matches)
+const FILTERS = [
+  { key: 'all', label: 'All', cats: null },
+  { key: 'fire', label: '🔥 Fire', cats: ['fire'] },
+  { key: 'crash', label: '🚗 Crash', cats: ['road_accident'] },
+  { key: 'violence', label: '👊 Violence', cats: ['assault'], exp: true },
+  { key: 'fall', label: '🧍 Fall', cats: ['fall'], exp: true },
+  { key: 'snatch', label: '👜 Snatch', cats: ['snatching'], exp: true },
+]
 
 const evidenceUrl = (incident, name) =>
   `/api/v1/evidence/v2/${incident.camera_id}/${(incident.event_start || '').slice(0, 10)}/${incident.incident_id}/${name}`
@@ -145,8 +166,9 @@ function HoverPopup({ group, onPin }) {
           />
           <div className="hover-meta">
             <span className="hover-category" style={{ color: categoryColor(item.category) }}>
-              {categoryLabel(item.category)}
+              {categoryIcon(item.category)} {categoryLabel(item.category)}
             </span>
+            {isExperimental(item) && <ExperimentalBadge />}
             <span>{fmtTime(item.event_start)}</span>
             <span>Conf: {(item.peak_confidence ?? 0).toFixed(2)}</span>
           </div>
@@ -229,6 +251,7 @@ function DetailPanel({ incident, group, onClose, hot, onHot }) {
 
       {/* Honesty badges */}
       <div className="detail-badges">
+        {isExperimental(incident) && <ExperimentalBadge />}
         {incident.status && incident.status !== 'new' && (
           <span className="honesty-badge">{statusLabel(incident.status)}</span>
         )}
@@ -254,7 +277,7 @@ function DetailPanel({ incident, group, onClose, hot, onHot }) {
 
       {/* Header */}
       <h2 className="detail-category" style={{ color: categoryColor(incident.category) }}>
-        {categoryLabel(incident.category)}
+        {categoryIcon(incident.category)} {categoryLabel(incident.category)}
       </h2>
       <div className="detail-location">
         <strong>{incident.camera_name}</strong>
@@ -301,13 +324,34 @@ function DetailPanel({ incident, group, onClose, hot, onHot }) {
         </div>
       </div>
 
+      {isExperimental(incident) && (
+        <div className="signals-panel">
+          <h3 className="detail-section-title">Why it fired (experimental)</h3>
+          <p className="detail-muted">
+            Score {det.peak_confidence?.toFixed(2) ?? '—'} against threshold {det.threshold_applied ?? '—'}. No automatic call is placed for
+            experimental detections: a call only happens if an operator presses “Escalate now” in Telegram.
+          </p>
+          <table className="signals-table">
+            <tbody>
+              {Object.entries(det.signals || {}).map(([k, v]) => (
+                <tr key={k}><td>{k.replace(/_/g, ' ')}</td><td>{String(v)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {/* Status buttons */}
       <div className="detail-actions">
         <StatusButton incident={incident} status="confirmed" label="✓ Acknowledge" color="#34D399" />
         <StatusButton incident={incident} status="false_positive" label="✗ False positive" color="#FF7180" />
       </div>
 
-      <p className="detail-muted">Acknowledge stops the automatic escalation call. False positive dismisses the incident.</p>
+      <p className="detail-muted">
+        {isExperimental(incident)
+          ? 'Acknowledge records that you saw it. False positive dismisses the incident.'
+          : 'Acknowledge stops the automatic escalation call. False positive dismisses the incident.'}
+      </p>
 
       {/* Notification Timeline */}
       <h3 className="detail-section-title">Notification Timeline</h3>
@@ -531,6 +575,7 @@ export default function MapView() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [newIncidentIds, setNewIncidentIds] = useState(new Set())
+  const [filterKey, setFilterKey] = useState('all')
   const mapRef = useRef(null)
   const prevGroupsRef = useRef([])
   const wsRef = useRef(null)
@@ -706,6 +751,16 @@ export default function MapView() {
     return offsets
   }, [groups.map((g) => `${g.camera_id}:${g.latitude}:${g.longitude}`).join('|')])  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // filter chips: hide cameras with no incident of the chosen category (stored data unchanged)
+  const visibleGroups = useMemo(() => {
+    const cats = FILTERS.find((f) => f.key === filterKey)?.cats
+    if (!cats) return groups
+    return groups
+      .map((g) => ({ ...g, incidents: (g.incidents || []).filter((i) => cats.includes(i.category)) }))
+      .filter((g) => g.incidents.length > 0)
+      .map((g) => ({ ...g, count: g.incidents.length }))
+  }, [groups, filterKey])
+
   // soft accuracy circle for the selected camera (device GPS only)
   const selectedGroup = groups.find((g) => g.camera_id === selected?.camera_id)
   const accuracyCircle = useMemo(
@@ -762,9 +817,10 @@ export default function MapView() {
               style={{ width: '100%', height: '100%' }}
               attributionControl={false}
             >
-              {groups.map((g, idx) => {
+              {visibleGroups.map((g, idx) => {
                 const mainCategory = mostSevereCategory(g.incidents)
                 const color = categoryColor(mainCategory)
+                const isExp = g.incidents.some(isExperimental)
                 const isNew = (g.incidents || []).some((i) => newIncidentIds.has(i.incident_id))
                 const isLive = liveId === g.camera_id
                 const isPhone = g.camera_type === 'phone'
@@ -778,6 +834,7 @@ export default function MapView() {
                         isNew && !PREFERSREDUCEDMOTION ? 'pulse' : '',
                         isLive ? 'selected' : '',
                         isPhone ? 'phone' : '',
+                        isExp ? 'experimental' : '',
                       ].filter(Boolean).join(' ')}
                       style={{ '--marker-color': color }}
                       onMouseEnter={() => setHoveredId(g.camera_id)}
@@ -787,6 +844,7 @@ export default function MapView() {
                       title={cameraOffsets[g.camera_id] ? `Offset on screen only: cameras within ${CLOSE_CAMERA_M} m (stored coordinates unchanged)` : undefined}
                     >
                       <span className="marker-number">{idx + 1}</span>
+                      {isExp && <span className="marker-exp" aria-label="experimental detector">EXP</span>}
                       {isNew && <span className="marker-pulse-ring" />}
                     </button>
                     {isHovered && (
@@ -809,12 +867,12 @@ export default function MapView() {
             /* ── Mapbox-free fallback ─────────────────────────────── */
             <div className="map-fallback">
               <div className="fallback-dots">
-                {groups.map((g, idx) => {
+                {visibleGroups.map((g, idx) => {
                   const mainCategory = mostSevereCategory(g.incidents)
                   return (
                     <button
                       key={g.camera_id}
-                      className={`camera-marker fallback ${g.camera_type === 'phone' ? 'phone' : ''}`}
+                      className={`camera-marker fallback ${g.camera_type === 'phone' ? 'phone' : ''} ${g.incidents.some(isExperimental) ? 'experimental' : ''}`}
                       style={{
                         '--marker-color': categoryColor(mainCategory),
                         left: `${12 + (idx * 23) % 76}%`,
@@ -835,6 +893,16 @@ export default function MapView() {
             </div>
           )}
 
+          {/* Filter chips */}
+          <div className="filter-chips" role="group" aria-label="Filter incidents by category">
+            {FILTERS.map((f) => (
+              <button key={f.key} className={`filter-chip ${filterKey === f.key ? 'active' : ''}`}
+                      aria-pressed={filterKey === f.key} onClick={() => setFilterKey(f.key)}>
+                {f.label}{f.exp && <span className="chip-exp">EXP</span>}
+              </button>
+            ))}
+          </div>
+
           {/* Legend */}
           <div className="map-legend" role="img" aria-label="Map legend">
             <div className="legend-item">
@@ -846,12 +914,16 @@ export default function MapView() {
               <span>Crash</span>
             </div>
             <div className="legend-item">
-              <span className="legend-dot" style={{ background: '#E74C6F' }} />
-              <span>Assault</span>
+              <span className="legend-dot exp-dot" style={{ background: '#E74C6F' }} />
+              <span>Violence <em className="legend-exp">exp.</em></span>
             </div>
             <div className="legend-item">
-              <span className="legend-dot" style={{ background: '#A97BFF' }} />
-              <span>Snatch</span>
+              <span className="legend-dot exp-dot" style={{ background: '#FFB829' }} />
+              <span>Fall <em className="legend-exp">exp.</em></span>
+            </div>
+            <div className="legend-item">
+              <span className="legend-dot exp-dot" style={{ background: '#A97BFF' }} />
+              <span>Snatch <em className="legend-exp">exp.</em></span>
             </div>
             <div className="legend-item">
               <span className="legend-dot phone-ring-legend" />
