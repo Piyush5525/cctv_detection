@@ -7,7 +7,7 @@ from pathlib import Path
 import os
 
 from api.core.config import settings
-from api.routes import incidents_v2, evidence, system, detect, emergency, map as map_routes, nearby_services, cameras
+from api.routes import incidents_v2, evidence, system, detect, emergency, map as map_routes, nearby_services, cameras, demo as demo_routes
 from api import db as db_v2
 
 
@@ -54,6 +54,7 @@ app.include_router(map_routes.router, prefix=settings.API_V1_STR)
 app.include_router(nearby_services.router, prefix=settings.API_V1_STR)
 app.include_router(cameras.router, prefix=settings.API_V1_STR)
 app.include_router(cameras.demo_router, prefix=settings.API_V1_STR)
+app.include_router(demo_routes.router, prefix=settings.API_V1_STR)
 
 frontend_build = Path(__file__).parent.parent / "frontend" / "build"
 if frontend_build.exists():

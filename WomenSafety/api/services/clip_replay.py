@@ -74,7 +74,7 @@ def _detector_for_category(category: str) -> str:
 
 
 def replay_clip(path: Path, camera_id: str, action_names=(), fire_crash=False, on_event: Optional[Callable] = None,
-                max_seconds: Optional[float] = None, clip_fn=None) -> ReplayReport:
+                max_seconds: Optional[float] = None, clip_fn=None, pose=None) -> ReplayReport:
     """on_event(camera_id, ev, evidence) -> Optional[dict]: called from the encoder thread with the finished event
     (e.g. to create the real incident); a returned incident dict is attached to the ReplayEvent. Without it the
     evidence files are still written (under settings.EVIDENCE_ROOT_V2) but no incident exists."""
@@ -106,7 +106,8 @@ def replay_clip(path: Path, camera_id: str, action_names=(), fire_crash=False, o
         report.quarantined.append({"category": category, "reason": reason})
 
     buf = RingBuffer(settings.PRE_EVENT_SECONDS)
-    runtime = ActionRuntime(camera_id, names, ready, quarantined, buf, clip_fn=clip_fn) if names else None
+    kwargs = {"clip_fn": clip_fn, **({"pose": pose} if pose is not None else {})}
+    runtime = ActionRuntime(camera_id, names, ready, quarantined, buf, **kwargs) if names else None
     if runtime is not None:
         runtime.record = True
     main = EventCapturePipeline(camera_id, ready, quarantined, shared_pre_buffer=buf) if fire_crash else None

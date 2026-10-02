@@ -16,7 +16,13 @@ import cv2
 from api.core.config import settings
 from api.models.incident_v2 import SourceKind
 from api.services.event_capture import EventCapturePipeline
+from api.services import audit
 from api.services import incident_service_v2 as incidents
+
+class DemoUnavailable(Exception):
+    """The requested demo category cannot run right now (clip missing, detector did not fire, ...). The route maps it
+    to HTTP 409 with this message; nothing is forced."""
+
 
 SAMPLES = {"fire": Path("data/fire.mp4"), "road_accident": Path("data/crash.mp4"), "crash": Path("data/crash.mp4")}
 SCAN_STEP_S, SCAN_MAX_S, MIN_START_S = 1.0, 40.0, 2.0
@@ -72,10 +78,48 @@ def _pick_frame(source: Path, mapped: str):
         return chosen
 
 
+def trigger_action_incident(camera_id: str, category: str):
+    """fall / violence (assault) / snatching: replay the provided clip through the REAL detector and the SAME
+    EventCapturePipeline (api/services/clip_replay.py). Returns the first incident created; if the detector does not
+    fire, says so plainly and creates nothing."""
+    from api.services import demo_clips
+    from api.services.clip_replay import replay_clip
+    category = demo_clips.ALIASES.get(category, category)
+    enabled, reason = demo_clips.availability(category)
+    if not enabled:
+        raise DemoUnavailable(reason)
+    detector, clip, label = demo_clips.ACTION_DEMO[category]
+    created = []
+
+    def on_event(cam, ev, evidence):
+        a, b = evidence.get("video_offset_start_s"), evidence.get("video_offset_end_s")
+        span = f"{a:.1f}-{b:.1f} s" if a is not None and b is not None else "clip"
+        note = (f"synthetic demo trigger: replay of {clip} ({span}) through the real {detector} detector; "
+                f"peak score {ev.peak_score:.2f} vs threshold {ev.threshold_applied}; EXPERIMENTAL")
+        inc = incidents.handle_finished_event(cam, ev, evidence, source=SourceKind.TEST_REPLAY, evidence_note=note)
+        if inc:
+            created.append(inc.to_dict())
+            return inc.to_dict()
+        return None
+
+    report = replay_clip(_ROOT / clip, camera_id, action_names=[detector], on_event=on_event)
+    d = report.detectors.get(detector, {})
+    if not created:
+        if report.events or report.quarantined:
+            raise DemoUnavailable(f"the {label} detector fired but the event was quarantined (camera has no usable location, or evidence could not be built)")
+        raise DemoUnavailable(f"the {label} detector did not fire on the sample clip this time (peak score {d.get('peak_score', 0)} vs threshold "
+                              f"{d.get('threshold', '?')}); no incident was created")
+    audit.record("demo_trigger", f"{category} on {camera_id}: {len(created)} incident(s) from the real {detector} detector")
+    return created[0]
+
+
 def trigger_demo_incident(camera_id: str, category: str):
+    from api.services import demo_clips
+    if demo_clips.ALIASES.get(category, category) in demo_clips.ACTION_DEMO:
+        return trigger_action_incident(camera_id, category)
     source = SAMPLES.get(category)
     if source is None:
-        raise ValueError("category must be fire, crash, or road_accident")
+        raise ValueError("category must be fire, crash, road_accident, fall, violence (assault) or snatching")
     mapped = "crash" if category in {"crash", "road_accident"} else category
     pick = _pick_frame(source, mapped)
     frame, detector = pick["frame"], pick["detector"]
@@ -105,4 +149,5 @@ def trigger_demo_incident(camera_id: str, category: str):
     pipeline._encode_queue.join()
     if not created:
         raise RuntimeError("sample event was quarantined; check ffmpeg and evidence output")
+    audit.record("demo_trigger", f"{mapped} on {camera_id}: stored-sample incident")
     return created[0]

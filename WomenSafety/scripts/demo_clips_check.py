@@ -109,6 +109,17 @@ def main():
     args = ap.parse_args()
     rows = run()
     write_md(rows, Path(args.md))
+    # Record which provided clips the real detector fired on (with each file's SHA-256): the dashboard enables a
+    # demo trigger only for a clip that exists AND fired here (api/services/demo_clips.py).
+    from api.services import demo_clips
+    to_cat = {"fall": "fall", "violence": "assault", "snatch": "snatching"}
+    record = {}
+    for r in rows:
+        if r["class"] in to_cat and not r.get("missing"):
+            d = r["report"].detectors.get(r["class"], {})
+            record[to_cat[r["class"]]] = {"fired": bool(d.get("fired")), "peak_score": d.get("peak_score"), "threshold": d.get("threshold")}
+    demo_clips.save_record(record)
+    print("recorded:", {k: v["fired"] for k, v in record.items()})
     if args.json:
         ser = []
         for r in rows:

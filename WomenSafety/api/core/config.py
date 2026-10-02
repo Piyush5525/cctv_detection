@@ -157,6 +157,9 @@ class Settings(BaseSettings):
     # the single place this rule (and the hard emergency-number block,
     # which applies regardless of DEMO_MODE) is enforced.
     DEMO_MODE: bool = True
+    # DEMO_DRY_RUN: Telegram stays real, but NO call is ever placed (recorded "suppressed: dry run"). Can also be
+    # flipped at runtime from the Demo panel (POST /api/v1/demo/dry-run, audited).
+    DEMO_DRY_RUN: bool = False
     DEMO_PHONE_NUMBER: str = ""
     # If set, Telegram sends are restricted to exactly this chat_id
     # (DEMO_MODE allowlist) -- defaults to TELEGRAM_CHAT_ID itself when

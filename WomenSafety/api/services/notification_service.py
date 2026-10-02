@@ -554,6 +554,10 @@ class NotificationService:
             if current is not None:
                 self._tg_note(incident_id, f"{who} cancelled: incident already {'acknowledged' if current.get('status') == 'confirmed' else 'dismissed'}")
             return
+        if settings.DEMO_DRY_RUN:
+            # DRY RUN: Telegram is real, calls are not. Checked before the cap/allowlist so nothing can dial.
+            self._record(incident_id, "call", "suppressed", "configured demo phone", "suppressed: dry run")
+            return skipped("suppressed: dry run")
         with self._lock:
             now = time.monotonic()
             while self._calls and now - self._calls[0] > 3600:

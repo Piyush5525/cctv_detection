@@ -440,13 +440,22 @@ function LiveCameraTile({ camera }) {
         {locationBadge(camera.location_source, camera.location_accuracy_m, camera.location_fix_age_s) && (
           <span className="honesty-badge loc-badge">{locationBadge(camera.location_source, camera.location_accuracy_m, camera.location_fix_age_s)}</span>
         )}
+        {camera.detectors?.length > 0 && (
+          <div className="det-chips" aria-label="Active detectors">
+            {camera.detectors.map((d) => (
+              <span key={d} className={`det-chip ${['fall', 'violence', 'snatch'].includes(d) ? 'exp' : ''}`}>
+                {d}{['fall', 'violence', 'snatch'].includes(d) ? ' EXP' : ''}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </article>
   )
 }
 
 // ─── Demo Controls Panel ─────────────────────────────────────────────
-function DemoControls({ groups, onRefresh }) {
+function DemoControls({ groups, onRefresh, demoState, onDemoState }) {
   const [triggerLoading, setTriggerLoading] = useState(false)
   const [triggerCategory, setTriggerCategory] = useState('fire')
 
@@ -462,11 +471,14 @@ function DemoControls({ groups, onRefresh }) {
   const handleTrigger = async () => {
     const cam = cameras.find((c) => c.camera_id === cameraId)
     if (!cam) return toast.error('No cameras available')
+    const chosen = (demoState?.categories || []).find((c) => c.category === triggerCategory)
+    if (chosen && !chosen.enabled) return toast.error(`${chosen.label} unavailable: ${chosen.reason}`)
     setTriggerLoading(true)
     try {
       await api.post('/demo/trigger', { camera_id: cam.camera_id, category: triggerCategory })
       toast.success(`Test ${triggerCategory} incident triggered on ${cam.name}`)
       onRefresh()
+      onDemoState?.()
     } catch (err) {
       toast.error(`Trigger failed: ${err.response?.data?.detail || err.message}`)
     } finally {
@@ -516,8 +528,14 @@ function DemoControls({ groups, onRefresh }) {
             onChange={(e) => setTriggerCategory(e.target.value)}
             aria-label="Trigger category"
           >
-            <option value="fire">🔥 Fire</option>
-            <option value="road_accident">🚗 Crash</option>
+            {(demoState?.categories || [
+              { category: 'fire', label: 'Fire', enabled: true }, { category: 'road_accident', label: 'Crash', enabled: true },
+            ]).map((c) => (
+              <option key={c.category} value={c.category} disabled={!c.enabled}
+                      title={c.enabled ? (c.experimental ? 'Experimental detector' : '') : `Unavailable: ${c.reason}`}>
+                {({ fire: '🔥', road_accident: '🚗', fall: '🧍', assault: '👊', snatching: '👜' })[c.category]} {c.label}{c.experimental ? ' (experimental)' : ''}{c.enabled ? '' : ' - unavailable'}
+              </option>
+            ))}
           </select>
           <button
             className="demo-btn trigger"
@@ -527,6 +545,51 @@ function DemoControls({ groups, onRefresh }) {
             {triggerLoading ? '⏳ Triggering…' : '⚡ Trigger test incident'}
           </button>
         </div>
+        {(() => {
+          const chosen = (demoState?.categories || []).find((c) => c.category === triggerCategory)
+          return chosen && !chosen.enabled ? <p className="demo-reason" role="status">{chosen.label} unavailable: {chosen.reason}</p> : null
+        })()}
+        <div className="demo-dry-row">
+          <button className={`demo-btn ${demoState?.dry_run ? 'dry-on' : ''}`} disabled={!demoState}
+                  title="DRY RUN: Telegram stays real, calls are suppressed"
+                  onClick={async () => {
+                    try { await api.post('/demo/dry-run', { enabled: !demoState?.dry_run }); onDemoState?.() }
+                    catch (err) { toast.error(err.response?.data?.detail || err.message) }
+                  }}>
+            {demoState?.dry_run ? '🧪 DRY RUN is ON (calls suppressed): turn off' : '🧪 Dry run: off (turn on to suppress calls)'}
+          </button>
+        </div>
+        {(demoState?.cameras || []).length > 0 && (
+          <div className="demo-toggles" role="group" aria-label="Per-camera detector toggles">
+            <strong className="demo-toggles-title">Detectors per camera (applied live, no restart)</strong>
+            {demoState.cameras.map((cam) => (
+              <div key={cam.camera_id} className="demo-toggle-row">
+                <span className="demo-toggle-cam">{cam.name}{cam.running ? '' : ' (offline)'}</span>
+                {demoState.all_detectors.map((d) => {
+                  const on = cam.detectors.includes(d)
+                  const exp = ['fall', 'violence', 'snatch'].includes(d)
+                  return (
+                    <button key={d} className={`det-toggle ${on ? 'on' : ''} ${exp ? 'exp' : ''}`} aria-pressed={on} disabled={!cam.running}
+                            title={cam.running ? `Default from cameras.json: ${cam.defaults.includes(d) ? 'on' : 'off'}${exp ? ' (experimental)' : ''}` : 'Camera worker not running'}
+                            onClick={async () => {
+                              try { await api.post('/demo/detectors', { camera_id: cam.camera_id, detector: d, enabled: !on }); onDemoState?.() }
+                              catch (err) { toast.error(err.response?.data?.detail || err.message) }
+                            }}>
+                      {d}{exp ? ' EXP' : ''}
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
+          </div>
+        )}
+        {(demoState?.audit || []).length > 0 && (
+          <ul className="demo-audit" aria-label="Session audit trail">
+            {demoState.audit.slice(0, 5).map((a, i) => (
+              <li key={i}><span>{new Date(a.at).toLocaleTimeString()}</span> {a.action}: {a.detail}</li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   )
@@ -576,6 +639,7 @@ export default function MapView() {
   const [error, setError] = useState(null)
   const [newIncidentIds, setNewIncidentIds] = useState(new Set())
   const [filterKey, setFilterKey] = useState('all')
+  const [demoState, setDemoState] = useState(null)
   const mapRef = useRef(null)
   const prevGroupsRef = useRef([])
   const wsRef = useRef(null)
@@ -654,6 +718,16 @@ export default function MapView() {
   useEffect(() => {
     if (lastMessage?.type === 'incident_created') fetchData()
   }, [lastMessage, fetchData])
+
+  // ── Demo state (dry run, category availability, per-camera detectors, audit tail) ──
+  const refreshDemoState = useCallback(() => {
+    api.get('/demo-state').then(({ data }) => setDemoState(data)).catch(() => {})
+  }, [])
+  useEffect(() => {
+    refreshDemoState()
+    const id = setInterval(refreshDemoState, 5000)
+    return () => clearInterval(id)
+  }, [refreshDemoState])
 
   // ── Polling fallback (2s) ──────────────────────────────────────────
   useEffect(() => {
@@ -787,6 +861,7 @@ export default function MapView() {
       <header className="demo-header">
         <div className="demo-header-left">
           <span className="demo-mode-badge" aria-label="Demo mode active">DEMO MODE</span>
+          {demoState?.dry_run && <span className="demo-mode-badge dry-run-badge" aria-label="Dry run: calls are suppressed">DRY RUN</span>}
           <div>
             <h1 className="demo-title">Live Incident Command Map</h1>
             <p className="demo-subtitle">
@@ -800,7 +875,7 @@ export default function MapView() {
       </header>
 
       {/* ── Demo Controls (hidden, Ctrl+Shift+D) ─────────────────── */}
-      {showControls && <DemoControls groups={groups} onRefresh={fetchData} />}
+      {showControls && <DemoControls groups={groups} onRefresh={fetchData} demoState={demoState} onDemoState={refreshDemoState} />}
 
       {/* ── Main Grid: Map + Detail ──────────────────────────────── */}
       <div className="demo-grid">

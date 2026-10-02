@@ -101,6 +101,33 @@ class CameraWorker:
         self.action_runtime, self.action, self.action_pipelines = runtime, runtime.engine, runtime.pipelines
         print(f"[{self.camera.camera_id}] EXPERIMENTAL action detectors on: {[d.name for d in runtime.engine.detectors]}")
 
+    def set_detectors(self, names) -> list:
+        """Applies a new detector list without a restart (Demo panel toggles). Fire/crash take effect on the next
+        sampled frame; action detectors get a fresh ActionRuntime (their state restarts). Returns the applied list.
+        Raises RuntimeError if an action detector is requested but the pose model is unavailable."""
+        from api.models.camera import KNOWN_DETECTORS
+        order = ("fire", "crash", "fall", "violence", "snatch")
+        names = [n for n in order if n in set(names) and n in KNOWN_DETECTORS]
+        wanted = [n for n in names if n in ACTION_NAMES]
+        current = [d.name for d in self.action.detectors] if self.action is not None else []
+        if sorted(wanted) != sorted(current):
+            new_runtime = None
+            if wanted:
+                new_runtime = ActionRuntime(self.camera.camera_id, wanted, self._incident_ready, self._quarantine, self.pipeline.pre_buffer,
+                                            engine_factory=lambda *a, **k: ActionEngine(*a, **k))
+                if not new_runtime.enabled:
+                    raise RuntimeError("the pose model is unavailable, so action detectors cannot be enabled")
+            old = self.action_runtime
+            if new_runtime is not None:
+                self.action_runtime, self.action, self.action_pipelines = new_runtime, new_runtime.engine, new_runtime.pipelines
+            else:
+                self.action_runtime, self.action, self.action_pipelines = None, None, {}
+            if old is not None:   # let an open event finish into an incident, then stop its encoder threads
+                old.flush(datetime.now(timezone.utc))
+                old.close()
+        self.detectors = names
+        return names
+
     def _fire_crash_fps(self, now: float) -> Optional[float]:
         recent = [t for t in self._fc_times if now - t <= 8.0]
         return (len(recent) - 1) / (recent[-1] - recent[0]) if len(recent) >= 3 and recent[-1] > recent[0] else None
@@ -188,23 +215,24 @@ class CameraWorker:
                     self._cond.wait(0.5)
                 original, captured, last_seq = self._latest
             now, ts = time.time(), datetime.now(timezone.utc)
+            action, action_pipelines, detectors = self.action, self.action_pipelines, list(self.detectors)   # snapshot: toggles can swap them
             self.pipeline.add_raw_frame(original, ts)
-            for action_pipeline in self.action_pipelines.values():
+            for action_pipeline in action_pipelines.values():
                 action_pipeline.add_raw_frame(original, ts)
             ran = False
             if self.gate.should_process(now):
                 ran = True
-                if any(n in self.detectors for n in ("fire", "crash")):
+                if any(n in detectors for n in ("fire", "crash")):
                     detection = self._detect(original)
                     self.pipeline.feed_detection(original, ts, **detection)
                     self._fc_times.append(now)
                     with self._cond: self._last_boxes = detection["boxes"]
                 age = time.monotonic() - captured
                 self.latency_s = age if self.latency_s is None else 0.8 * self.latency_s + 0.2 * age
-            if self.action is not None:
+            if action is not None:
                 # Action detectors keep their own cadence (a no-op between passes) and back off if fire/crash fps drops.
-                self.action.update_throttle(self._fire_crash_fps(now) if any(n in self.detectors for n in ("fire", "crash")) else None, now)
-                ran = bool(self.action.process(original, now, ts)) or ran
+                action.update_throttle(self._fire_crash_fps(now) if any(n in detectors for n in ("fire", "crash")) else None, now)
+                ran = bool(action.process(original, now, ts)) or ran
             if not ran:
                 self._stop.wait(0.005)
 
@@ -250,6 +278,12 @@ class CameraWorkerManager:
         for worker in list(self.workers.values()): worker.stop()
         self.workers.clear()
     def status(self): return {"cameras": [worker.detail() for worker in self.workers.values()]}
+    def set_camera_detector(self, camera_id, detector, enabled):
+        """Toggle one detector on one running camera; returns the applied list. KeyError = no running worker."""
+        worker = self.workers[camera_id]
+        current = list(worker.detectors)
+        wanted = (current + [detector]) if enabled and detector not in current else [d for d in current if d != detector or enabled]
+        return worker.set_detectors(wanted)
     def frame(self, camera_id):
         worker = self.workers.get(camera_id)
         return worker.snapshot() if worker else None

@@ -9,7 +9,8 @@ from pydantic import BaseModel
 from api.core.config import settings
 from api.models.camera import get_camera
 from api.services.camera_workers import camera_workers
-from api.services.demo_trigger import trigger_demo_incident
+from api.services import audit
+from api.services.demo_trigger import DemoUnavailable, trigger_demo_incident
 
 router = APIRouter(prefix="/cameras", tags=["cameras"])
 demo_router = APIRouter(prefix="/demo", tags=["demo"], dependencies=[Depends(require_demo_token)])
@@ -50,18 +51,51 @@ class DemoTrigger(BaseModel):
 async def trigger(payload: DemoTrigger):
     if get_camera(payload.camera_id) is None: raise HTTPException(404, "Camera not found")
     try: return public_view(await asyncio.to_thread(trigger_demo_incident, payload.camera_id, payload.category))
+    except DemoUnavailable as exc: raise HTTPException(409, str(exc))   # clip missing / detector did not fire: said plainly, nothing forced
     except ValueError as exc: raise HTTPException(422, str(exc))
     except RuntimeError as exc: raise HTTPException(503, str(exc))
+
+
+class DetectorToggle(BaseModel):
+    camera_id: str
+    detector: str
+    enabled: bool
+
+
+@demo_router.post("/detectors")
+async def toggle_detector(payload: DetectorToggle):
+    """Runtime per-camera detector toggle (no restart). Audited."""
+    from api.models.camera import KNOWN_DETECTORS
+    if payload.detector not in KNOWN_DETECTORS: raise HTTPException(422, f"unknown detector {payload.detector!r}")
+    if payload.camera_id not in camera_workers.workers: raise HTTPException(409, "that camera has no running worker (offline or workers disabled)")
+    try: applied = await asyncio.to_thread(camera_workers.set_camera_detector, payload.camera_id, payload.detector, payload.enabled)
+    except RuntimeError as exc: raise HTTPException(503, str(exc))
+    audit.record("detector_toggle", f"{payload.camera_id}: {payload.detector} {'on' if payload.enabled else 'off'} -> {','.join(applied) or 'none'}")
+    return {"camera_id": payload.camera_id, "detectors": applied}
+
+
+class DryRun(BaseModel):
+    enabled: bool
+
+
+@demo_router.post("/dry-run")
+async def set_dry_run(payload: DryRun):
+    """DRY RUN: Telegram stays real, calls are suppressed. Runtime flag; audited."""
+    settings.DEMO_DRY_RUN = payload.enabled
+    audit.record("dry_run", "on" if payload.enabled else "off")
+    return {"dry_run": settings.DEMO_DRY_RUN}
 
 
 @demo_router.post("/reset")
 async def reset_demo():
     from api.services import demo_reset
+    audit.record("demo_reset", "incidents cleared (DB backed up first)")
     return await asyncio.to_thread(demo_reset.reset, False)
 
 
 @demo_router.post("/showcase")
 async def load_showcase():
     from api.services import demo_reset
+    audit.record("demo_showcase", "showcase loaded (DB backed up first)")
     try: return await asyncio.to_thread(demo_reset.reset, True)
     except demo_reset.ShowcaseMissing as exc: raise HTTPException(404, str(exc))
