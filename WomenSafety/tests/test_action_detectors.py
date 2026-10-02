@@ -170,6 +170,79 @@ class SnatchTests(unittest.TestCase):
     def test_single_person_not_detected(self):
         self.assertFalse(any_hit(self.run_seq([[S.box_person(1, 100 + 10 * k, 300)] for k in range(20)])))
 
+class FallLostTrackTests(unittest.TestCase):
+    def run_seq(self, seq):
+        return S.run(FallDetector(), S.frames(seq))
+
+    def test_track_lost_during_the_fall_then_low_for_two_seconds_is_a_fall(self):
+        res = self.run_seq(S.fall_lost_then_low())
+        hits = [r for r in res if r.detected]
+        self.assertTrue(hits)
+        sig = hits[0].signals
+        self.assertEqual(sig["path"], "lost_track_then_low")
+        self.assertGreaterEqual(sig["stay_down_s"], 2.0)
+        self.assertLessEqual(sig["height_ratio"], 0.75)
+        self.assertGreaterEqual(sig["head_drop_frac"], 0.30)
+        self.assertGreaterEqual(hits[0].score, 0.6)
+
+    def test_not_a_fall_when_the_gap_is_too_long_or_the_person_walked_away_or_left_the_frame_or_stood_up(self):
+        self.assertFalse(any_hit(self.run_seq(S.fall_lost_then_low(gap_s=4.5))), "gap longer than FALL_LOST_GAP_S")
+        self.assertFalse(any_hit(self.run_seq(S.walk_away_lost())), "smaller person higher in the image = walked away")
+        self.assertFalse(any_hit(self.run_seq(S.fall_lost_then_low(x=20.0, x_new=40.0))), "last seen at the frame edge = left the frame")
+        self.assertFalse(any_hit(self.run_seq(S.lost_then_stands_up())), "stood up again")
+
+    def test_stay_down_still_required(self):
+        self.assertFalse(any_hit(self.run_seq(S.fall_lost_then_low(low_s=1.0))))
+
+
+class ViolenceMergedBlobTests(unittest.TestCase):
+    def setUp(self):
+        self.calls = []
+
+        def clip(frame):
+            self.calls.append(1)
+            return "street violence", 0.23
+        self.det = ViolenceDetector(clip_fn=clip)
+
+    def run_seq(self, seq, det=None):
+        return S.run(det or self.det, S.frames(seq), window_s=3.0)
+
+    def test_one_large_merged_box_with_movement_and_sustained_clip_top1_is_detected(self):
+        res = self.run_seq(S.merged_blob_sequence())
+        hits = [r for r in res if r.detected]
+        self.assertTrue(hits)
+        self.assertEqual(hits[0].signals["mode"], "merged_blob")
+        self.assertEqual(hits[0].signals["clip_label"], "street violence")
+
+    def test_single_small_person_or_a_still_blob_never_runs_clip(self):
+        self.assertFalse(any_hit(self.run_seq(S.merged_blob_sequence(h=100))))          # 100 px < 30 percent of the frame height
+        self.assertFalse(any_hit(self.run_seq(S.merged_blob_sequence(swing=0.0))))      # large but not moving
+        self.assertEqual(self.calls, [])
+
+    def test_a_non_violent_top1_label_or_a_score_below_the_cutoff_does_not_alert(self):
+        for label, score in (("people walking on a street", 0.30), ("street violence", 0.20)):
+            det = ViolenceDetector(clip_fn=lambda f, l=label, sc=score: (l, sc))
+            self.assertFalse(any_hit(self.run_seq(S.merged_blob_sequence(), det)), label)
+
+
+class SnatchContactPathTests(unittest.TestCase):
+    def run_seq(self, seq):
+        return S.run(SnatchDetector(), S.frames(seq))
+
+    def test_sustained_contact_with_a_speed_burst_then_a_takedown_is_detected(self):
+        hits = [r for r in self.run_seq(S.contact_drag_takedown()) if r.detected]
+        self.assertTrue(hits)
+        sig = hits[0].signals
+        self.assertEqual((sig["path"], sig["outcome"]), ("contact_burst_outcome", "ground"))
+        self.assertGreaterEqual(sig["contact_s"], 2.0)
+        self.assertGreaterEqual(sig["burst_speed"], 2.0)
+
+    def test_walking_together_a_still_embrace_and_incomplete_patterns_are_not_detected(self):
+        self.assertFalse(any_hit(self.run_seq(S.walking_together())))
+        self.assertFalse(any_hit(self.run_seq(S.contact_drag_takedown(burst=False))), "no speed burst")
+        self.assertFalse(any_hit(self.run_seq(S.contact_drag_takedown(takedown=False))), "no takedown and no separation")
+        self.assertFalse(any_hit(self.run_seq([[S.box_person(1, 300, 300), S.box_person(2, 400, 300)] for _ in range(30)])), "standing still together")
+
 
 if __name__ == "__main__":
     unittest.main()

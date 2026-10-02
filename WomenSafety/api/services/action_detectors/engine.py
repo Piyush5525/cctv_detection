@@ -119,7 +119,7 @@ class ActionEngine:
                 continue
             self._last_eval[d.name] = t
             win = [pf for pf in self._window if t - pf.t <= d.window_s + 1e-6]
-            if not persons:
+            if not any(pf.persons for pf in win):      # nobody in the whole window: nothing to evaluate (pose drops out between passes)
                 res = d.idle()
             else:
                 res = d.detect(win)

@@ -243,6 +243,15 @@ class Settings(BaseSettings):
     FALL_DROP_VEL: float = 0.5                 # peak drop velocity, standing heights per second
     FALL_STAY_DOWN_S: float = 2.0
     FALL_SCORE_THRESHOLD: float = 0.6
+    # fall, second path ("lost track, then low"): pose often loses a person DURING the fall (motion blur, tumbling). A track last seen
+    # upright (not leaving the frame) that is followed within FALL_LOST_GAP_S by a new track nearby whose box is much shorter
+    # (<= FALL_LOW_HEIGHT_RATIO of the standing height) with the head lower in the image (>= FALL_LOST_MIN_HEAD_DROP standing heights: a person
+    # walking away raises their head, one walking closer grows, so neither passes) and that STAYS low for FALL_STAY_DOWN_S is a fall (sitting/lying on the ground).
+    FALL_LOST_GAP_S: float = 3.0
+    FALL_LOST_LINK_DIST: float = 1.5
+    FALL_LOW_HEIGHT_RATIO: float = 0.75
+    FALL_LOST_MIN_HEAD_DROP: float = 0.30
+    FALL_EDGE_MARGIN: float = 0.03
     FALL_CONFIRM_N: int = 2
     FALL_CONFIRM_M: int = 3
     FALL_END_GAP_S: float = 6.0
@@ -251,10 +260,16 @@ class Settings(BaseSettings):
     VIOLENCE_WINDOW_S: float = 3.0
     VIOLENCE_INTERVAL_S: float = 1.0           # CLIP cadence, only evaluated when the gates pass
     VIOLENCE_PROXIMITY: float = 1.2            # persons closer than this many body heights count as "close"
-    VIOLENCE_MOTION_THRESHOLD: float = 1.0     # limb motion energy (body heights / s, torso motion removed)
-    VIOLENCE_SUSTAIN_FRAC: float = 0.5         # fraction of the window that must exceed the motion threshold
+    # Limb-motion gate: only "some movement" (was 1.0 / 0.5). Measured torso-relative limb energy does NOT separate a fight from other people
+    # on the provided clips (median 0.25 fight, 0.28 a person falling, 0.14-0.22 others), so the evidence is CLIP's top-1 rank, sustained.
+    VIOLENCE_MOTION_THRESHOLD: float = 0.25    # limb motion energy (body heights / s, torso motion removed)
+    VIOLENCE_SUSTAIN_FRAC: float = 0.4         # fraction of the window that must exceed the motion threshold
     VIOLENCE_MIN_SPAN_S: float = 1.5           # minimum window coverage before the gate can open
-    VIOLENCE_CLIP_THRESHOLD: float = 0.28      # CLIP cosine score for a violence/fight label
+    # CLIP cosine of the TOP-1 label (any of the repo's labels) being a violence/fight label. 0.22 (was 0.28, which was model.py's legacy
+    # "Unknown" cutoff): cosines on real fight frames sit at 0.22-0.25 while the pose gates and N-of-M smoothing guard against false hits.
+    VIOLENCE_CLIP_THRESHOLD: float = 0.22
+    VIOLENCE_MERGED_MIN_H: float = 0.30        # a lone person box at least this tall (fraction of frame height) counts as merged fighters
+    VIOLENCE_MAX_GAP_S: float = 1.0            # limb energy is bridged across pose drop-outs up to this long
     VIOLENCE_SMOOTH_N: int = 3
     VIOLENCE_SMOOTH_M: int = 5
     VIOLENCE_CONFIRM_N: int = 2
@@ -262,7 +277,7 @@ class Settings(BaseSettings):
     VIOLENCE_END_GAP_S: float = 6.0
     VIOLENCE_MERGE_S: float = 30.0
     # snatch (tracking prototype, high thresholds)
-    SNATCH_WINDOW_S: float = 3.0
+    SNATCH_WINDOW_S: float = 8.0               # long enough for contact + burst + outcome (the old approach-and-flee rule only needs ~3 s of it)
     SNATCH_INTERVAL_S: float = 0.25
     SNATCH_FAR: float = 1.8                    # distance (body heights) before the approach
     SNATCH_NEAR: float = 0.8                   # distance at contact
@@ -272,6 +287,18 @@ class Settings(BaseSettings):
     SNATCH_FLEE_S: float = 1.5                 # flee must develop within this after contact
     SNATCH_SEPARATE: float = 1.5               # separation reached (body heights)
     SNATCH_SCORE_THRESHOLD: float = 0.7
+    # snatch, second path ("contact, burst, takedown or separation"): two tracks in sustained contact (<= SNATCH_CONTACT_DIST body heights)
+    # for >= SNATCH_CONTACT_S, one of them bursting to >= SNATCH_BURST_SPEED body heights/s (dragged / pulled / tearing away), then within
+    # SNATCH_OUTCOME_WITHIN_S either someone ends on the ground (box aspect >= SNATCH_GROUND_ASPECT or torso >= SNATCH_GROUND_ANGLE deg)
+    # or the pair separates by >= SNATCH_OUTCOME_SEP body heights. Covers snatches that start already in contact (e.g. from a motorbike).
+    SNATCH_CONTACT_DIST: float = 0.9
+    SNATCH_CONTACT_GAP_S: float = 1.5          # pose drop-outs up to this long do not break a contact run
+    SNATCH_CONTACT_S: float = 2.0
+    SNATCH_BURST_SPEED: float = 2.0
+    SNATCH_OUTCOME_WITHIN_S: float = 4.0
+    SNATCH_OUTCOME_SEP: float = 1.5
+    SNATCH_GROUND_ASPECT: float = 1.5
+    SNATCH_GROUND_ANGLE: float = 50.0
     SNATCH_CONFIRM_N: int = 2
     SNATCH_CONFIRM_M: int = 3
     SNATCH_END_GAP_S: float = 6.0

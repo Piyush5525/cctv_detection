@@ -181,3 +181,72 @@ def walk_past(speed_h=1.2):
     for k in range(26):
         seq.append([box_person(1, 60 + k * step, 300), box_person(2, 760 - k * step, 310)])
     return seq
+
+
+# --- second-path scenarios (lost-track-then-low fall, merged-blob violence, contact-burst-takedown snatch) ---------------------
+from api.services.action_detectors.base import PersonPose as _PP
+
+
+def _sit_person(tid, x, h=H, ground=GROUND):
+    """A person sitting on the ground: hip near the floor, torso upright, box about 0.67 of the standing height."""
+    kp = skeleton(x, ground - 0.12 * h, 0, h=h, legs="sit")
+    box = (x - 0.3 * h, ground - 0.4 * h, x + 0.35 * h, ground + 0.1 * h)
+    return _PP(track_id=tid, box=box, kp=kp)
+
+
+def _stand(tid, x, ground=GROUND, h=H):
+    return person(tid, skeleton(x, ground - 0.5 * h, 0, h=h))
+
+
+def fall_lost_then_low(gap_s=2.5, low_s=3.5, x=300.0, x_new=330.0):
+    seq = [[_stand(1, x)] for _ in range(8)]
+    seq += [[] for _ in range(int(gap_s / DT))]                 # pose loses her during the fall
+    seq += [[_sit_person(2, x_new)] for _ in range(int(low_s / DT))]
+    return seq
+
+
+def walk_away_lost(gap_s=2.0, x=300.0):
+    """Stands, is lost, and a SMALLER person appears HIGHER in the image (walked away from the camera): head goes up, not down."""
+    seq = [[_stand(1, x)] for _ in range(8)]
+    seq += [[] for _ in range(int(gap_s / DT))]
+    seq += [[person(2, skeleton(x + 10, GROUND - 90 - 0.5 * 120, 0, h=120))] for _ in range(14)]
+    return seq
+
+
+def lost_then_stands_up(x=300.0):
+    seq = [[_stand(1, x)] for _ in range(8)] + [[] for _ in range(8)]
+    seq += [[_sit_person(2, x + 20)] for _ in range(3)]            # low for under 1 s ...
+    seq += [[_stand(2, x + 20)] for _ in range(12)]                # ... then stands up
+    return seq
+
+
+def merged_blob_sequence(n=28, swing=1.0, h=H):
+    """ONE large person box with fast limb movement (two fighters merged into one pose box)."""
+    return [[person(1, skeleton(300, GROUND - 0.5 * h, 0, h=h, arm=(swing if i % 2 == 0 else -swing)))] for i in range(n)]
+
+
+def lying_box(tid, cx, cy, h=H):
+    return _PP(track_id=tid, box=(cx - 0.5 * h, cy - 0.1 * h, cx + 0.5 * h, cy + 0.1 * h), kp=np.zeros((17, 3)))
+
+
+def contact_drag_takedown(takedown=True, burst=True):
+    """A and B together (distance 0.5 body heights) moving right; B bursts to ~3 body heights/s for one step; then A ends on the ground."""
+    seq, xa = [], 100.0
+    for i in range(14):
+        step = 0.7 * H * DT                                         # walking together at 0.7 body heights/s
+        if burst and i == 6:
+            step = 3.0 * H * DT
+        xa += step
+        seq.append([box_person(1, xa, 300), box_person(2, xa + 0.5 * H, 300)])
+    for _ in range(8):
+        a = lying_box(1, xa, 330) if takedown else box_person(1, xa, 300)
+        seq.append([a, box_person(2, xa + 0.5 * H, 300)])
+    return seq
+
+
+def walking_together(n=26, speed_h=1.0):
+    seq, x = [], 100.0
+    for _ in range(n):
+        x += speed_h * H * DT
+        seq.append([box_person(1, x, 300), box_person(2, x + 0.5 * H, 300)])
+    return seq

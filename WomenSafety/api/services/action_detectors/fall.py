@@ -66,6 +66,8 @@ class FallDetector(ActionDetector):
         self.confirm_n, self.confirm_m = s.FALL_CONFIRM_N, s.FALL_CONFIRM_M
         self.end_gap_s, self.merge_s = s.FALL_END_GAP_S, s.FALL_MERGE_S
         self._latched: dict = {}    # track_id -> {"t_down","vel","head_drop","hip_drop","last_seen","upright_run"}
+        self._seen: dict = {}       # track_id -> memory used by the lost-track-then-low path
+        self._links: dict = {}      # new track_id -> link to the upright predecessor (or None once it stood up / was rejected)
 
     # --- sample classification -------------------------------------------------
     @staticmethod
@@ -125,9 +127,81 @@ class FallDetector(ActionDetector):
         stay_s = min(1.0, stay / max(2 * s.FALL_STAY_DOWN_S, 1e-6))
         return 0.30 * vel_s + 0.25 * angle_s + 0.15 * flip_s + 0.30 * stay_s
 
+    # --- second path: the track is lost during the fall, a new low track appears nearby ----------------------------------
+    def _edge(self, p: PersonPose, pf: PoseFrame) -> bool:
+        m = settings.FALL_EDGE_MARGIN
+        return p.box[0] <= m * pf.frame_w or p.box[2] >= (1 - m) * pf.frame_w or p.box[1] <= m * pf.frame_h
+
+    def _update_seen(self, latest: PoseFrame) -> None:
+        for p in latest.persons:
+            f = features(p)
+            rec = self._seen.get(p.track_id)
+            if rec is None:
+                rec = self._seen[p.track_id] = {"t_first": latest.t, "first": p, "up_p": None, "upright_t": None}
+            rec.update(t_last=latest.t, p=p, f=f, edge=self._edge(p, latest))
+            if self._is_upright(f) and p.h >= 0.08 * latest.frame_h:
+                rec["up_p"], rec["upright_t"], rec["up_edge"] = p, latest.t, rec["edge"]
+        for tid in [k for k, r in self._seen.items() if latest.t - r["t_last"] > 30.0]:
+            self._seen.pop(tid, None); self._links.pop(tid, None)
+
+    def _find_link(self, tid: int, latest: PoseFrame) -> Optional[dict]:
+        s = settings
+        rec = self._seen[tid]
+        p0 = rec["first"]
+        best = None
+        for old_id, old in self._seen.items():
+            if old_id == tid or old["up_p"] is None or old.get("up_edge"):
+                continue
+            gap = rec["t_first"] - old["t_last"]
+            if not 0.2 <= gap <= s.FALL_LOST_GAP_S or old["t_last"] - old["upright_t"] > 1.0:
+                continue
+            ref = max(old["up_p"].h, 1.0)
+            u = old["up_p"]
+            ratio = p0.h / ref
+            head_drop = (features(p0)["head_y"] - features(u)["head_y"]) / ref
+            bottom_shift = abs(p0.box[3] - u.box[3]) / ref
+            dist = float(np.linalg.norm(p0.center - u.center)) / ref
+            if dist <= s.FALL_LOST_LINK_DIST and ratio <= s.FALL_LOW_HEIGHT_RATIO and head_drop >= s.FALL_LOST_MIN_HEAD_DROP:
+                cand = {"old": old_id, "gap": gap, "ref": ref, "ratio": ratio, "head_drop": head_drop, "bottom_shift": bottom_shift,
+                        "hip_drop": (features(p0)["hip_y"] - features(u)["hip_y"]) / ref}
+                if best is None or cand["gap"] < best["gap"]:
+                    best = cand
+        return best
+
+    def _linked_results(self, latest: PoseFrame) -> list:
+        s = settings
+        out = []
+        for p in latest.persons:
+            tid = p.track_id
+            if tid not in self._links:
+                self._links[tid] = self._find_link(tid, latest)
+            link = self._links[tid]
+            if not link:
+                continue
+            f = features(p)
+            ratio_now = p.h / link["ref"]
+            if ratio_now > s.FALL_LOW_HEIGHT_RATIO + 0.15 or (self._is_upright(f) and ratio_now > 0.85):
+                self._links[tid] = None            # the person stood up: not a fall
+                continue
+            stay = latest.t - self._seen[tid]["t_first"]
+            clip01 = lambda v: max(0.0, min(1.0, v))
+            score = (0.35 * clip01((1 - link["ratio"]) / 0.5) + 0.25 * clip01(link["head_drop"] / 0.6)
+                     + 0.25 * clip01(stay / max(2 * s.FALL_STAY_DOWN_S, 1e-6)) + 0.15 * clip01(1 - link["gap"] / s.FALL_LOST_GAP_S))
+            detected = stay >= s.FALL_STAY_DOWN_S and score >= self.threshold
+            signals = {"path": "lost_track_then_low", "track_id": int(tid), "track_gap_s": r3(link["gap"]), "height_ratio": r3(link["ratio"]),
+                       "head_drop_frac": r3(link["head_drop"]), "hip_drop_frac": r3(link["hip_drop"]), "bottom_shift": r3(link["bottom_shift"]),
+                       "torso_angle_deg": None if f["angle"] is None else r3(f["angle"]), "aspect_ratio": r3(f["aspect"]),
+                       "stay_down_s": r3(stay), "stay_down_required_s": s.FALL_STAY_DOWN_S}
+            if not detected:
+                signals["blocked_by"] = [f"stay-down {stay:.1f} s < {s.FALL_STAY_DOWN_S} s"] if stay < s.FALL_STAY_DOWN_S else [f"score {score:.2f} < threshold {self.threshold}"]
+            out.append(ActionResult(detected=detected, score=score, label="fall", signals=signals,
+                                    boxes=[person_box(p, "fall (experimental)", score)] if detected else []))
+        return out
+
     def detect(self, window: list) -> ActionResult:
         s = settings
         latest: PoseFrame = window[-1]
+        self._update_seen(latest)
         by_track: dict = {}
         persons: dict = {}
         for pf in window:
@@ -195,6 +269,9 @@ class FallDetector(ActionDetector):
                 signals["blocked_by"] = failed
             res = ActionResult(detected=detected, score=score, label="fall", signals=signals,
                                boxes=[person_box(p, "fall (experimental)", score)] if detected else [])
+            if best is None or (res.detected, res.score) > (best.detected, best.score):
+                best = res
+        for res in self._linked_results(latest):
             if best is None or (res.detected, res.score) > (best.detected, best.score):
                 best = res
         if best is not None:

@@ -25,6 +25,7 @@ import numpy as np
 
 from api.core.config import settings
 from api.services.action_detectors.base import ActionDetector, ActionResult, PersonPose, person_box, r3
+from api.services.action_detectors.fall import features as posture_features
 
 
 def _series(window: list, tid: int) -> list:
@@ -110,7 +111,90 @@ class SnatchDetector(ActionDetector):
                             "approach_speed": r3(approach_speed), "flee_speed": r3(flee_speed), "acceleration_ratio": r3(ratio),
                             "separation": r3(sep), "diverging_angle_deg": r3(angle), "target_speed": r3(na)}}
 
+    # --- second path: sustained contact, a burst of speed, then a takedown or a separation --------------------------------------
+    def _contact_path(self, window: list) -> list:
+        s = settings
+        by_track: dict = {}
+        for pf in window:
+            for p in pf.persons:
+                by_track.setdefault(p.track_id, []).append((pf.t, p, pf.frame_h))
+        ids = sorted(by_track)
+        out = []
+        for i, ida in enumerate(ids):
+            for idb in ids[i + 1:]:
+                ta = {t: p for t, p, _h in by_track[ida]}
+                tb = {t: p for t, p, _h in by_track[idb]}
+                common = sorted(set(ta) & set(tb))
+                if len(common) < 3:
+                    continue
+                dist = {t: float(np.linalg.norm(ta[t].center - tb[t].center)) / max(ta[t].h, tb[t].h, 1.0) for t in common}
+                # longest contact run (distance <= SNATCH_CONTACT_DIST), bridging pose drop-outs of up to SNATCH_CONTACT_GAP_S
+                runs, cur = [], None
+                for t in common:
+                    if dist[t] <= s.SNATCH_CONTACT_DIST:
+                        if cur is not None and t - cur[1] <= s.SNATCH_CONTACT_GAP_S:
+                            cur[1] = t
+                        else:
+                            cur = [t, t]
+                            runs.append(cur)
+                if not runs:
+                    continue
+                t0, t1 = max(runs, key=lambda r: r[1] - r[0])
+                contact_s = t1 - t0
+                if contact_s <= 0:
+                    continue
+                burst, burst_id = 0.0, None
+                for tid, ser in ((ida, by_track[ida]), (idb, by_track[idb])):
+                    for (ta_, pa, _), (tb_, pb, _) in zip(ser, ser[1:]):
+                        dt = tb_ - ta_
+                        if 0 < dt <= 0.6 and t0 - 0.5 <= tb_ <= t1 + 1.0:
+                            sp = float(np.linalg.norm(pb.center - pa.center)) / max(pa.h, pb.h, 1.0) / dt
+                            if sp > burst:
+                                burst, burst_id = sp, tid
+                ground, ground_id, ground_val = False, None, 0.0
+                for tid, ser in ((ida, by_track[ida]), (idb, by_track[idb])):
+                    for t, p, _h in ser:
+                        if t0 <= t <= t1 + s.SNATCH_OUTCOME_WITHIN_S:
+                            f = posture_features(p)
+                            if f["aspect"] >= s.SNATCH_GROUND_ASPECT or (f["angle"] is not None and f["angle"] >= s.SNATCH_GROUND_ANGLE):
+                                if f["aspect"] > ground_val:
+                                    ground, ground_id, ground_val = True, tid, f["aspect"]
+                sep = max((dist[t] for t in common if t1 < t <= t1 + s.SNATCH_OUTCOME_WITHIN_S), default=0.0)
+                outcome = "ground" if ground else ("separation" if sep >= s.SNATCH_OUTCOME_SEP else None)
+                cap = lambda v, thr: min(1.0, v / (1.5 * thr))
+                outcome_cap = 1.0 if ground else cap(sep, s.SNATCH_OUTCOME_SEP)
+                score = float(np.mean([cap(contact_s, s.SNATCH_CONTACT_S), cap(burst, s.SNATCH_BURST_SPEED), outcome_cap]))
+                failed = []
+                if contact_s < s.SNATCH_CONTACT_S:
+                    failed.append(f"contact {contact_s:.1f} s < {s.SNATCH_CONTACT_S} s")
+                if burst < s.SNATCH_BURST_SPEED:
+                    failed.append(f"speed burst {burst:.2f} < {s.SNATCH_BURST_SPEED} body heights/s")
+                if outcome is None:
+                    failed.append(f"no takedown and separation {sep:.2f} < {s.SNATCH_OUTCOME_SEP}")
+                detected = not failed and score >= self.threshold
+                target = ground_id if ground else (ida if burst_id == idb else idb)
+                signals = {"path": "contact_burst_outcome", "target_track": int(target), "other_track": int(idb if target == ida else ida),
+                           "contact_s": r3(contact_s), "burst_speed": r3(burst), "outcome": outcome or "none", "separation": r3(sep)}
+                if ground:
+                    signals["ground_aspect"] = r3(ground_val)
+                if not detected:
+                    signals["blocked_by"] = failed or [f"score {score:.2f} < threshold {self.threshold}"]
+                boxes = []
+                if detected:
+                    for tid in (ida, idb):
+                        boxes.append(person_box(by_track[tid][-1][1], "snatch (experimental)", score))
+                out.append(ActionResult(detected=detected, score=score, label="snatch", signals=signals, boxes=boxes))
+        return out
+
     def detect(self, window: list) -> ActionResult:
+        res = self._detect_approach(window)
+        best = res
+        for cand in self._contact_path(window):
+            if (cand.detected, cand.score) > (best.detected, best.score):
+                best = cand
+        return best
+
+    def _detect_approach(self, window: list) -> ActionResult:
         ids = sorted({p.track_id for pf in window for p in pf.persons})
         best, blocked = None, []
         for ida in ids:
