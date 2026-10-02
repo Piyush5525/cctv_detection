@@ -60,3 +60,6 @@ discovery/cache/
 
 # Screenshots of the provided action clips stay local (see data/demo/SOURCES.md)
 docs/screenshots/scripted_*.png
+docs/screenshots/e2e_fall.png
+docs/screenshots/e2e_violence.png
+docs/screenshots/e2e_snatching.png
