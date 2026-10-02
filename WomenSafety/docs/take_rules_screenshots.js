@@ -20,7 +20,7 @@ const OUT = path.join(__dirname, 'screenshots');
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto(`${BASE}/map`, { waitUntil: 'networkidle', timeout: 45000 });
   await page.waitForTimeout(4000);
-  const marker = await page.$('.camera-marker');
+  const markers = await page.$$('.camera-marker'); const marker = markers[parseInt(process.argv[4] || '0', 10)];
   if (!marker) { console.log('NO MARKER FOUND'); await browser.close(); process.exit(1); }
   await marker.click();
   await page.waitForTimeout(3000);

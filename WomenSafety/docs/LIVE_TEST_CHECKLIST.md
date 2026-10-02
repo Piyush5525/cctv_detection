@@ -70,6 +70,21 @@ python run_dashboard.py --mode api --no-build
 ```
 Open http://localhost:8000/map. To rehearse without any outbound traffic, start with `$env:ALERTS_ENABLED = 'false'` (the timeline then shows `skipped: ALERTS_ENABLED is false`).
 
+## Per-camera detector presets (decide before the demo)
+
+Detectors are chosen per camera (`"detectors"` in `config/cameras.json`, env override `DETECTORS_<CAMERA_ID>`, or the Demo panel toggles, which apply live and are written to the session audit trail). Two presets:
+
+| Preset | Detectors | Use for | Why |
+|---|---|---|---|
+| **Fire/crash camera** (the default) | fire, crash | the camera pointed at a screen playing the fire/crash sample clips, or any scene where fire or a vehicle crash is the story | the only two detectors that fired on their sample clips; no pose model is loaded, so the least CPU |
+| **Action-scene camera** | fall, violence, snatch (optionally with fire and crash off) | a camera filming people acting out a fall, a fight or a snatch | action detectors are EXPERIMENTAL, never auto-call, and **did not fire on the provided clips**, so treat this preset as unproven until a refilmed clip passes `python scripts/demo_clips_check.py` |
+
+Rules of thumb, from measurements and the cross-trigger list in `docs/KNOWN_FALSE_POSITIVES.md`:
+- Do not put fire/crash and the action detectors on the same camera for an action scene: fire and crash fired on the fall and snatch clips (people, cars and lighting), so an action scene on a fire/crash camera can raise fire or crash alerts that auto-call. Turn fire and crash OFF on the action-scene camera (Demo panel toggles) or give that camera an action-only list, e.g. `$env:DETECTORS_CAM_002 = 'fall,violence,snatch'` before starting the API.
+- Use the action-scene preset on ONE camera only: on this laptop, with two cameras running, the guard throttles the action detectors to roughly 0.6 pose passes per second each, which makes fall and snatch effectively blind.
+- Changing a camera's detector list at runtime restarts that camera's action detectors' state (a half-finished fall or approach is forgotten).
+- Check the list on the camera tiles (detector chips) or with `Invoke-RestMethod http://localhost:8000/api/v1/cameras/status` (the `detectors` field) before starting.
+
 ## 1. Both phones online and /cameras/status
 
 Start IP Webcam on both phones, then:

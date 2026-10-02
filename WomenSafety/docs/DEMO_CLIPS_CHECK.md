@@ -8,7 +8,7 @@ Thresholds in force: fall score 0.6, violence CLIP 0.28, snatch score 0.7, fire/
 |---|---|---|---|---|---|---|---|---|
 | data/demo/fall.mp4 | fall | 20.05 s | 1280x720 @ 29.97 | **NO** | 0.227 | 0.6 | n/a | fire, crash |
 | data/demo/violence.mp4 | violence | 19.43 s | 576x320 @ 30.0 | **NO** | 0.0 | 0.28 | n/a | none |
-| data/demo/snatch.mp4 | snatch | 62.28 s | 1280x720 @ 25.0 | **NO** | 0.0 | 0.7 | n/a | crash |
+| data/demo/snatch.mp4 | snatch | 30.0 s | 1280x720 @ 25.0 | **NO** | 0.441 | 0.7 | n/a | crash |
 | data/fire.mp4 | fire | 59.16 s | 640x352 @ 29.97 | **yes** | 0.761 | 0.5 | 12.28 | none |
 | data/crash.mp4 | crash | 11.87 s | 1280x720 @ 30.0 | **yes** | 0.78 | 0.5 | 4.27 | none |
 
@@ -36,11 +36,11 @@ Thresholds in force: fall score 0.6, violence CLIP 0.28, snatch score 0.7, fire/
 
 | Detector | Fired | Peak score | Threshold | Events (video time) | Signals that fired / nearest miss | Blocked by |
 |---|---|---|---|---|---|---|
-| fall | no | 0.459 | 0.6 | - | track_id=6, head_drop_frac=0.201, hip_drop_frac=0.123, drop_velocity=0.157, transition_s=1.12, torso_angle_deg=82.739, aspect_ratio=2.65, aspect_flip=True, stay_down_s=0.56, stay_down_required_s=2.0 | person never reached a down posture (torso not near horizontal, box not wider than tall) (x134); track too short (fewer than 3 samples) (x42); head drop 0.20 < 0.35 (x3) |
-| violence | no | 0.269 | 0.28 | - | persons=2, gate_open=True, pair_distance=0.456, motion_energy=0.923, motion_sustained_frac=0.5, clip_label=Unknown, clip_score=0.269, smoothing=0 of 5 (need 3 of 5) | gate: limb motion not sustained (x17); gate: fewer than 2 persons (x11); gate: persons not close (x10) |
-| snatch (target) | no | 0.0 | 0.7 | - | - | no sudden approach (x117); pair not tracked together for 4+ samples (x107); fewer than 2 tracked persons (x14) |
-| fire | no | 0.531 | 0.5 | - | - | - |
-| crash | yes | 0.645 | 0.5 | 35.28-35.28 s (peak 0.528, 3 of 5); 44.8-50.68 s (peak 0.611, 3 of 5); 56.84-57.12 s (peak 0.503, 3 of 5) | - | - |
+| fall | no | 0.527 | 0.6 | - | track_id=3, head_drop_frac=0.22, hip_drop_frac=0.127, drop_velocity=0.207, transition_s=0.84, torso_angle_deg=75.409, aspect_ratio=1.612, aspect_flip=True, stay_down_s=1.68, stay_down_required_s=2.0 | person never reached a down posture (torso not near horizontal, box not wider than tall) (x95); track too short (fewer than 3 samples) (x21); head drop 0.22 < 0.35 (x4) |
+| violence | no | 0.0 | 0.28 | - | - | gate: limb motion not sustained (x15); gate: persons not close (x6); gate: fewer than 2 persons (x5) |
+| snatch (target) | no | 0.441 | 0.7 | - | target_track=3, runner_track=7, approach_closing_speed=2.04, approach_speed=1.622, flee_speed=0.897, acceleration_ratio=0.553, separation=0.762, diverging_angle_deg=180.0, target_speed=0.275 | no sudden approach (x81); pair not tracked together for 4+ samples (x70); flee speed 0.90 < 2.5 body heights/s (x6) |
+| fire | no | 0.541 | 0.5 | - | - | - |
+| crash | yes | 0.615 | 0.5 | 24.64-28.28 s (peak 0.615, 3 of 5) | - | - |
 
 ### data/fire.mp4 (target: fire)
 
