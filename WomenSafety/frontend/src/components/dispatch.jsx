@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { Marker, useMap } from 'react-map-gl/mapbox'
 import toast from 'react-hot-toast'
+import { dispatchModel, dispatchPoints, incidentPoint } from '../utils/dispatchModel.mjs'
 
 const REDUCED =
   typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
@@ -120,50 +121,7 @@ const setData = (map, id, data) => { map.getSource(id)?.setData(data); stats.dat
 const easeOut = (t) => 1 - Math.pow(1 - t, 3)
 const clamp01 = (v) => Math.max(0, Math.min(1, v))
 
-function midpoint(coords) {
-  if (!coords?.length) return null
-  if (coords.length === 2) return [(coords[0][0] + coords[1][0]) / 2, (coords[0][1] + coords[1][1]) / 2]
-  const seg = []; let total = 0
-  for (let i = 1; i < coords.length; i++) { const d = Math.hypot(coords[i][0] - coords[i - 1][0], coords[i][1] - coords[i - 1][1]); seg.push(d); total += d }
-  let acc = 0
-  for (let i = 0; i < seg.length; i++) {
-    if (acc + seg[i] >= total / 2) { const t = (total / 2 - acc) / (seg[i] || 1); return [coords[i][0] + (coords[i + 1][0] - coords[i][0]) * t, coords[i][1] + (coords[i + 1][1] - coords[i][1]) * t] }
-    acc += seg[i]
-  }
-  return coords[Math.floor(coords.length / 2)]
-}
-
-// Services to draw for an incident: [{ id, type, rank, lng, lat, title, ... }] + routes
-export function dispatchModel(incident) {
-  const plan = incident?.dispatch_plan
-  const services = [], routes = []
-  if (!plan?.assignments) return { services, routes, types: [] }
-  const types = []
-  plan.assignments.forEach((a) => {
-    if (a.status !== 'available' || !a.service?.gps_coordinates) return
-    const type = a.service_category
-    types.push(type)
-    const g = a.service.gps_coordinates
-    services.push({ id: `${type}:p`, type, rank: 'primary', lng: g.longitude, lat: g.latitude, title: a.service.title })
-    ;(a.alternatives || []).forEach((alt, i) => {
-      const ag = alt.gps_coordinates
-      if (ag) services.push({ id: `${type}:a${i}`, type, rank: 'alt', lng: ag.longitude, lat: ag.latitude, title: alt.title })
-    })
-    const geom = a.route?.geometry
-    if (geom?.coordinates?.length >= 2) {
-      const estimated = a.route.route_source !== 'mapbox_driving'
-      routes.push({ id: `${type}:r`, type, geometry: geom, estimated, km: a.route.distance_km, eta: a.route.eta_minutes, mid: midpoint(geom.coordinates) })
-    }
-  })
-  return { services, routes, types }
-}
-
-export function dispatchPoints(incident) {
-  const { services } = dispatchModel(incident)
-  const pts = services.map((s) => [s.lng, s.lat])
-  if (pts.length && incident?.longitude != null) pts.push([incident.longitude, incident.latitude])
-  return pts
-}
+export { dispatchModel, dispatchPoints }
 
 export function fitToDispatch(mapRef, incident) {
   const pts = dispatchPoints(incident)
@@ -185,6 +143,7 @@ export function DispatchLayer({ incident, hot, onHot }) {
   const progressRef = useRef(1)
   const appearRef = useRef({})
   const model = useMemo(() => dispatchModel(incident), [incident?.incident_id, incident?.dispatch_plan?.created_at])  // eslint-disable-line react-hooks/exhaustive-deps
+  const here = incidentPoint(incident)
   modelRef.current = model
   hotRef.current = hot
 
@@ -214,6 +173,7 @@ export function DispatchLayer({ incident, hot, onHot }) {
     if (!map) return undefined
     let alive = true
     let busy = false
+    if (typeof window !== 'undefined') window.__dispatchMap = map   // diagnostics / integration checks only
     const ensure = async () => {
       if (busy) return  // (isStyleLoaded() is false while tiles load, so don't gate on it; addSource throws until the style is ready and we retry)
       busy = true
@@ -265,8 +225,15 @@ export function DispatchLayer({ incident, hot, onHot }) {
 
   return (
     <>
-      {model.routes.map((r) => r.mid && (
-        <Marker key={r.id} longitude={r.mid[0]} latitude={r.mid[1]} anchor="center">
+      {here && (
+        <Marker longitude={here[0]} latitude={here[1]} anchor="bottom">
+          <div className="incident-pin" role="img" aria-label="Incident location" title="Incident location">
+            <svg width="30" height="38" viewBox="0 0 30 38"><path d="M15 37C15 37 2 23.5 2 14.5a13 13 0 0 1 26 0C28 23.5 15 37 15 37z" fill="#FF4B3E" stroke="#fff" strokeWidth="2.5" /><circle cx="15" cy="14.5" r="5" fill="#fff" /></svg>
+          </div>
+        </Marker>
+      )}
+      {model.routes.map((r) => r.mid && r.showChip && (
+        <Marker key={r.id} longitude={r.mid[0]} latitude={r.mid[1]} anchor="center" offset={[0, -16]}>
           <div className={`eta-chip ${hot === r.type ? 'hot' : ''}`} style={{ '--chip-color': styleOf(r.type).color }}
                aria-label={`${styleOf(r.type).label}: ${r.eta ?? '?'} minutes, ${r.km ?? '?'} kilometres${r.estimated ? ', estimated' : ''}`}>
             {r.estimated ? 'est. ' : ''}{r.eta ?? '?'} min · {r.km ?? '?'} km

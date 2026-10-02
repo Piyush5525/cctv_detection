@@ -5,6 +5,8 @@ import toast from 'react-hot-toast'
 import api from '../utils/api'
 import { useWebSocket } from '../context/WebSocketContext'
 import { DispatchCard, DispatchLayer, DispatchLegend, dispatchModel, fitToDispatch } from '../components/dispatch'
+import IncidentMedia from '../components/IncidentMedia'
+import { isVideoPlaying } from '../utils/media.mjs'
 
 // Local style used when Mapbox's style/tiles cannot be loaded (offline): plain dark background,
 // dispatch icons / lines / card keep working because they are drawn by our own layers.
@@ -94,8 +96,6 @@ const FILTERS = [
   { key: 'snatch', label: '👜 Snatch', cats: ['snatching'], exp: true },
 ]
 
-const evidenceUrl = (incident, name) =>
-  `/api/v1/evidence/v2/${incident.camera_id}/${(incident.event_start || '').slice(0, 10)}/${incident.incident_id}/${name}`
 
 const fmtTime = (iso) => {
   if (!iso) return '—'
@@ -135,7 +135,7 @@ function HoverPopup({ group, onPin }) {
 
   useEffect(() => {
     if (rows.length <= 1 || PREFERSREDUCEDMOTION) return
-    const id = setInterval(() => setIdx((x) => (x + 1) % rows.length), SLIDE_MS)
+    const id = setInterval(() => { if (!isVideoPlaying()) setIdx((x) => (x + 1) % rows.length) }, SLIDE_MS)
     return () => clearInterval(id)
   }, [rows.length])
 
@@ -160,6 +160,7 @@ function HoverPopup({ group, onPin }) {
       {item && (
         <div className="hover-slide">
           <img
+            key={item.incident_id}
             src={item.thumbnail_url}
             alt={`${categoryLabel(item.category)} evidence thumbnail`}
             loading="lazy"
@@ -285,44 +286,8 @@ function DetailPanel({ incident, group, onClose, hot, onHot }) {
         <span className="detail-time">{fmtDateTime(incident.detected_at)}</span>
       </div>
 
-      {/* Evidence media */}
-      <div className="detail-media">
-        <video
-          controls
-          src={evidenceUrl(incident, 'clip.mp4')}
-          poster={evidenceUrl(incident, 'thumbnail.jpg')}
-          className="detail-video"
-          preload="metadata"
-        />
-        <img
-          src={evidenceUrl(incident, 'best_frame.jpg')}
-          alt="Best evidence frame"
-          className="detail-best-frame"
-          loading="lazy"
-        />
-      </div>
-
-      {/* Detection metadata */}
-      <div className="detail-meta-grid">
-        <div className="meta-item">
-          <span className="meta-label">Peak / Mean</span>
-          <span className="meta-value">
-            {det.peak_confidence?.toFixed(2) ?? '—'} / {det.mean_confidence?.toFixed(2) ?? '—'}
-          </span>
-        </div>
-        <div className="meta-item">
-          <span className="meta-label">Threshold</span>
-          <span className="meta-value">{det.threshold_applied ?? '—'}</span>
-        </div>
-        <div className="meta-item">
-          <span className="meta-label">Model</span>
-          <span className="meta-value mono">{det.model_name || '—'}</span>
-        </div>
-        <div className="meta-item">
-          <span className="meta-label">Frames confirmed</span>
-          <span className="meta-value">{det.frames_confirmed || '—'}</span>
-        </div>
-      </div>
+      {/* Evidence media: stable elements keyed by incident (polling never reloads the video) */}
+      <IncidentMedia key={incident.incident_id} incident={incident} />
 
       {isExperimental(incident) && (
         <div className="signals-panel">

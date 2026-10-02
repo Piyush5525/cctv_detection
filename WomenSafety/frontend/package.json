@@ -37,6 +37,7 @@
     "build:css": "tailwindcss -i ./src/index.css -o ./src/tailwind.css --minify",
     "build": "npm run build:css && vite build",
     "preview": "vite preview",
-    "lint": "eslint src --ext js,jsx"
+    "lint": "eslint src --ext js,jsx",
+    "test": "node --test tests/media.test.mjs tests/dispatchModel.test.mjs"
   }
 }
