@@ -59,14 +59,14 @@ If the phone IP changed, look it up in the IP Webcam app (it shows the address),
 ### CAM 002 (second phone)
 
 ```powershell
-Test-NetConnection 10.172.4.180 -Port 8080
+Test-NetConnection <PHONE_2_IP> -Port 8080
 python scripts/check_camera.py CAM-002
 ```
 
 Settings in `.env` (same pattern as CAM 001; restart the API after changing them):
 
 ```
-PHONE_CAM002_URL=http://10.172.4.180:8080/video
+PHONE_CAM002_URL=http://<PHONE_2_IP>:8080/video
 PHONE_CAM002_LAT=<number>
 PHONE_CAM002_LNG=<number>
 ```

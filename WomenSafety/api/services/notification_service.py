@@ -546,6 +546,12 @@ class NotificationService:
         def skipped(reason: str) -> None:
             self._tg_note(incident_id, f"{who} skipped: {reason}")
 
+        # ALERTS_ENABLED gates EVERY outbound call, including a stale "Escalate now" button pressed after alerts were turned off.
+        enabled = alerts_enabled_check()
+        if not enabled.allowed:
+            self._record(incident_id, "call", "skipped", "configured demo phone", enabled.reason)
+            return skipped(enabled.reason)
+
         current = incident_service.get_incident(incident_id)
         if current is None or current.get("status") in ("false_positive", "confirmed"):
             # "confirmed" == Acknowledge: stops the automatic call whether it was
