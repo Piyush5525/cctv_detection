@@ -549,5 +549,46 @@ class ToggleEndpointTests(unittest.TestCase):
             settings.SCRIPTED_AUTO_CALL, settings.DEMO_MODE = saved
 
 
+class AlertsToggleTests(unittest.TestCase):
+    def test_alerts_toggle_needs_the_token_is_audited_shown_and_changes_what_is_sent(self):
+        settings.DEMO_TOKEN = "t"
+        saved = settings.ALERTS_ENABLED
+        from fastapi.testclient import TestClient
+        from api.main import app
+        try:
+            with TestClient(app) as client:
+                h = {"X-Demo-Token": "t"}
+                self.assertEqual(client.post("/api/v1/demo/alerts", json={"enabled": True}).status_code, 403)
+                self.assertFalse(client.get("/api/v1/demo-state").json()["alerts_enabled"])
+                self.assertEqual(client.post("/api/v1/demo/alerts", json={"enabled": True}, headers=h).json(), {"alerts_enabled": True})
+                self.assertTrue(client.get("/api/v1/demo-state").json()["alerts_enabled"])
+                # the same incident now gets its Telegram message (mocked) instead of "skipped: ALERTS_ENABLED is false"
+                os.environ.update(TELEGRAM_CHAT_ID="42")
+                svc = ns.NotificationService()
+                bot = MagicMock(); bot.send_message.return_value = SimpleNamespace(message_id=1); bot.send_photo.return_value = SimpleNamespace(message_id=1)
+                svc._bot = bot
+                saved_chat = settings.TELEGRAM_CHAT_ID_ALLOWLIST
+                try:
+                    iid, data = scripted_incident_dict("fall")
+                    with patch("api.services.nearby_services.lookup_cached", return_value=LOOKUP):
+                        svc._process(data)
+                    self.assertTrue(bot.send_message.called or bot.send_photo.called)
+                    client.post("/api/v1/demo/alerts", json={"enabled": False}, headers=h)
+                    bot.reset_mock()
+                    iid2, data2 = scripted_incident_dict("fall")
+                    with patch("api.services.nearby_services.lookup_cached", return_value=LOOKUP):
+                        svc._process(data2)
+                    self.assertFalse(bot.send_message.called or bot.send_photo.called)
+                    self.assertIn(("telegram", "skipped"), [(n["channel"], n["status"]) for n in incidents.get_incident(iid2)["notifications"]])
+                finally:
+                    settings.TELEGRAM_CHAT_ID_ALLOWLIST = saved_chat
+                    os.environ["TELEGRAM_CHAT_ID"] = ""
+                    svc.stop()
+                self.assertTrue(any(e["action"] == "alerts" for e in audit.entries()))
+        finally:
+            settings.DEMO_TOKEN = ""
+            settings.ALERTS_ENABLED = saved
+
+
 if __name__ == "__main__":
     unittest.main()

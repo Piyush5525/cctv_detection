@@ -488,6 +488,7 @@ function DemoControls({ groups, onRefresh, demoState, onDemoState }) {
     try {
       await api.post('/demo/trigger', { camera_id: cam.camera_id, category: triggerCategory })
       toast.success(`Test ${triggerCategory} incident triggered on ${cam.name}`)
+      if (demoState && !demoState.alerts_enabled) toast('Alerts are OFF: no Telegram message and no call are sent. Turn Alerts on in the Demo panel.', { icon: '⚠️', duration: 7000 })
       onRefresh()
       onDemoState?.()
     } catch (err) {
@@ -544,7 +545,7 @@ function DemoControls({ groups, onRefresh, demoState, onDemoState }) {
             ]).map((c) => (
               <option key={c.category} value={c.category} disabled={!c.enabled}
                       title={c.enabled ? (c.scripted ? 'SCRIPTED DEMO: the category is set by the demo script, no detector runs on the clip, nothing is scored' : '') : `Unavailable: ${c.reason}`}>
-                {({ fire: '🔥', road_accident: '🚗', fall: '🧍', assault: '👊', snatching: '👜' })[c.category]} {c.label}{c.scripted ? ' (scripted demo)' : c.experimental ? ' (experimental)' : ''}{c.enabled ? '' : ' - unavailable'}
+                {({ fire: '🔥', road_accident: '🚗', fall: '🧍', assault: '👊', snatching: '👜' })[c.category]} {c.label}{c.enabled ? '' : ' - unavailable'}
               </option>
             ))}
           </select>
@@ -560,6 +561,18 @@ function DemoControls({ groups, onRefresh, demoState, onDemoState }) {
           const chosen = (demoState?.categories || []).find((c) => c.category === triggerCategory)
           return chosen && !chosen.enabled ? <p className="demo-reason" role="status">{chosen.label} unavailable: {chosen.reason}</p> : null
         })()}
+        <div className="demo-dry-row">
+          <button className={`demo-btn ${demoState && !demoState.alerts_enabled ? 'dry-on' : ''}`} disabled={!demoState}
+                  title="Master switch for every outbound Telegram message and call (ALERTS_ENABLED). Allowlist, DRY RUN, cooldowns and the call cap still apply."
+                  onClick={async () => {
+                    const turnOn = !demoState?.alerts_enabled
+                    if (turnOn && !window.confirm('Turn ALERTS ON? Triggers will send REAL Telegram messages to the demo chat (and calls to the demo phone where the policy allows).')) return
+                    try { await api.post('/demo/alerts', { enabled: turnOn }); onDemoState?.() }
+                    catch (err) { toast.error(err.response?.data?.detail || err.message) }
+                  }}>
+            {demoState?.alerts_enabled ? '🔔 Alerts are ON (real Telegram / calls): turn off' : '🔕 Alerts are OFF: nothing is sent (turn on)'}
+          </button>
+        </div>
         <div className="demo-dry-row">
           <button className={`demo-btn ${demoState?.scripted_auto_call ? 'dry-on' : ''}`} disabled={!demoState}
                   title="Scripted incidents (Fall, Violence, Snatching) never call automatically by default. When ON and DEMO_MODE is true, an unacknowledged scripted incident calls the allowlisted demo phone after the escalation delay. All call safety rules still apply."
@@ -885,6 +898,7 @@ export default function MapView() {
         <div className="demo-header-left">
           <span className="demo-mode-badge" aria-label="Demo mode active">DEMO MODE</span>
           {demoState?.dry_run && <span className="demo-mode-badge dry-run-badge" aria-label="Dry run: calls are suppressed">DRY RUN</span>}
+          {demoState && !demoState.alerts_enabled && <span className="demo-mode-badge dry-run-badge" aria-label="Alerts off: no Telegram or calls">ALERTS OFF</span>}
           <div>
             <h1 className="demo-title">Live Incident Command Map</h1>
             <p className="demo-subtitle">

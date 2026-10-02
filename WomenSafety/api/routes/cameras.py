@@ -90,6 +90,19 @@ async def set_scripted_auto_call(payload: ScriptedAutoCall):
     return {"scripted_auto_call": settings.SCRIPTED_AUTO_CALL, "effective": settings.SCRIPTED_AUTO_CALL and settings.DEMO_MODE}
 
 
+class AlertsToggle(BaseModel):
+    enabled: bool
+
+
+@demo_router.post("/alerts")
+async def set_alerts(payload: AlertsToggle):
+    """Runtime ALERTS_ENABLED (the master gate for every outbound Telegram message and call). Same effect as the env var, lost on
+    restart. The allowlist, hard-blocked numbers, DEMO_MODE, DRY RUN, cooldowns and the call cap all still apply. Audited."""
+    settings.ALERTS_ENABLED = payload.enabled
+    audit.record("alerts", "on (real Telegram/calls allowed)" if payload.enabled else "off")
+    return {"alerts_enabled": settings.ALERTS_ENABLED}
+
+
 @demo_router.post("/dry-run")
 async def set_dry_run(payload: DryRun):
     """DRY RUN: Telegram stays real, calls are suppressed. Runtime flag; audited."""

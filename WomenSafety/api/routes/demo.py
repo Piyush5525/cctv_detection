@@ -20,6 +20,6 @@ async def demo_state():
                      "detectors": list(worker.detectors) if worker is not None else c.active_detectors,
                      "defaults": c.active_detectors})
     return {"demo_mode": settings.DEMO_MODE, "dry_run": settings.DEMO_DRY_RUN,
-            "scripted_auto_call": settings.SCRIPTED_AUTO_CALL, "scripted_auto_call_effective": settings.SCRIPTED_AUTO_CALL and settings.DEMO_MODE,
+            "alerts_enabled": settings.ALERTS_ENABLED, "scripted_auto_call": settings.SCRIPTED_AUTO_CALL, "scripted_auto_call_effective": settings.SCRIPTED_AUTO_CALL and settings.DEMO_MODE,
             "escalation_delay_s": settings.DEMO_ESCALATION_DELAY_S, "categories": demo_clips.categories(),
             "cameras": cams, "all_detectors": ["fire", "crash", "fall", "violence", "snatch"], "audit": audit.entries(20)}

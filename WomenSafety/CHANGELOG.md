@@ -1,3 +1,10 @@
+# Why the scripted Fall sent no Telegram or call; Alerts toggle (2026-10-03)
+
+- **Cause (read from the running server's incident):** the Fall incident's timeline was `telegram skipped: ALERTS_ENABLED is false`, `call skipped: ALERTS_ENABLED is false`. `.env` currently has `ALERTS_ENABLED=false`, the master gate for every outbound message and call, so nothing was sent by design; the routing itself (plan from cache, hospital, no auto-call by policy) was fine. Nothing in the UI said so.
+- **Fix (visibility + control, the gate itself unchanged):** header badge "ALERTS OFF" when alerts are disabled; a warning toast after a trigger when alerts are off; Demo-panel button "Alerts are ON/OFF" (`POST /api/v1/demo/alerts`, token-protected, audited, `GET /demo-state` carries `alerts_enabled`) that flips the runtime ALERTS_ENABLED (lost on restart; asks for confirmation before turning real alerts on). Allowlist, hard-blocked numbers, DEMO_MODE, DRY RUN, cooldowns and the call cap still apply. `.env` was not edited. Test added (167 passing).
+- Removed the "(scripted demo)" suffix from the Fall / Violence / Snatching picker entries (the tooltip and every SCRIPTED DEMO badge stay).
+- Reminder of the policy: even with alerts ON a scripted incident sends Telegram only; the call needs Escalate now, or the "Scripted incidents: call after delay" toggle.
+
 # Scripted triggers enabled; end-to-end routing check on CAM-001 (2026-10-03)
 
 - **Why Fall/Violence/Snatching showed "unavailable":** `data/demo/demo_events.yaml` still had the `REPLACE_ME: true` marker (by design it disables all three). I looked at a contact sheet of each clip and set the windows myself (fall: event 3-12 s, best frame 6 s, the person falls at about 3.5-4.5 s and is on the ground after; violence: 0.5-16 s, best 6 s, two people grappling throughout; snatching: 1.5-11 s, best 4 s, bike snatch at about 2-10 s) and removed the marker. These are my reading of the footage, not ground truth; edit the file to change them (a restart is not needed, the Demo panel re-reads it every few seconds).
