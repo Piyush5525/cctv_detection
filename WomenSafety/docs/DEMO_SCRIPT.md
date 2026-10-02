@@ -66,25 +66,23 @@ Open the dashboard at `http://localhost:3000/map`.
 
 ---
 
-## Scripted demos: Fall, Violence, Snatching
+## Fall, Violence, Snatching (experimental detectors, replayed on the provided clips)
 
-**Say this once, before the first one:** "These three are scripted. I picked the clip and the moment; the system did not detect them. No detector runs on these clips and nothing is scored. Fire and crash are the ones with detectors." The dashboard says the same everywhere: **SCRIPTED DEMO** and **EXPERIMENTAL** badges, "Confidence: Not scored", and the Telegram caption and call text both say "scripted demo".
+**Say this once, before the first one:** "These three detectors are experimental. Their thresholds were tuned against exactly one clip per class, the same clips I am about to replay, so this shows the pipeline working end to end, not how accurate they are on new footage." Each incident carries the real score, threshold and signals from the detector, plus the EXPERIMENTAL badge.
 
-Setup (once): open `data/demo/demo_events.yaml`, set the real `event_start_s`, `event_end_s` and `best_frame_s` for each clip, and delete the `REPLACE_ME: true` line. Until then the three entries show "unavailable" in the Demo panel and a trigger is refused. Check the picker: Fall, Violence and Snatching should be enabled. Keep `DRY RUN` on for rehearsals.
+Each one: Demo panel (Ctrl+Shift+D) -> pick the camera -> pick the category -> trigger. The provided clip is replayed through the real detector and the same event pipeline as live cameras (about 20-60 s of processing); if the detector did not fire, nothing is created and the panel says so. A category is only enabled when `scripts/demo_clips_check.py` showed the detector fired on that exact file (SHA-256 recorded).
 
-Each one: Demo panel (Ctrl+Shift+D) -> pick the camera -> pick the category -> "Trigger test incident".
+| Category | Detector | Recorded result on its own clip |
+|---|---|---|
+| **Fall** | pose rules, lost-track-then-low path | 0.731 vs threshold 0.6 |
+| **Violence** | CLIP top-1 behind pose gates | 0.242 vs 0.22 (CLIP cosine, a low-valued scale) |
+| **Snatching** | tracks: contact, speed burst, takedown | 0.923 vs 0.7 |
 
-| Category | What you do | What the audience sees | What to say |
-|---|---|---|---|
-| **Fall** | trigger Fall on the chosen camera | a marker with a **SCRIPTED** tag and the Fall icon; click it: photo from the chosen moment, the clip (starts a few seconds before the event), "Confidence: Not scored", the "Scripted demo - not a detector result" panel with the event window; the dispatch card shows the nearest **hospital** only; Telegram message "SCRIPTED DEMO - EXPERIMENTAL" with the hospital and distance | "This is a scripted fall. If a camera confirmed a fall, this is how the operator would see it: the evidence, the nearest hospital, and one tap to escalate. The fall detector itself is experimental and I am not claiming it fired here." |
-| **Violence** | trigger Violence | same, with the Violence icon; dispatch card shows the nearest **police station** only | "Scripted violence incident. The category comes from the script. It shows the police dispatch path, not detection accuracy." |
-| **Snatching** | trigger Snatching | same, police station only | "Scripted snatching incident, same flow. Real snatching detection is not demonstrated here." |
+Alert behaviour: dashboard + Telegram (photo, location pin, three buttons); no automatic call for experimental detectors, "Escalate now" places it. Cooldown 60 s per camera and category.
 
-Alert behaviour to point out (all three): Telegram gets the photo, location pin and the three buttons (Acknowledge, False alarm, Escalate now). There is **no automatic call**: the call only happens when someone presses Escalate now. The call text starts "This is a test call for the Room 118 demo. Scripted demo incident: fall at ..." If you want to show an automatic call, switch on "Scripted incidents: call after delay" in the Demo panel (only works while DEMO_MODE is on, calls only the allowlisted demo phone, respects DRY RUN, the cooldown and the call cap); Acknowledge cancels it.
+Sequence: `python scripts/run_demo.py --sequence fire,crash,fall,violence,snatching --delay 25 --dry-run`.
 
-Sequence for a rehearsal or the full run: `python scripts/run_demo.py --sequence fire,crash,fall,violence,snatching --delay 25 --dry-run`. Fire and crash use their stored samples (real detectors' sample incidents); the last three are the scripted triggers described above.
-
-Do not: describe a scripted incident as "detected", quote a score for it, or run it on a camera that also has fire/crash detectors on a live scene (see `docs/KNOWN_FALSE_POSITIVES.md`).
+Do not: claim these generalize. See `docs/ACTION_DETECTORS_STATUS.md` and `docs/DEMO_CLIPS_CHECK.md`.
 
 ---
 

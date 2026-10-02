@@ -64,28 +64,29 @@ def save_record(results: dict, path: Optional[Path] = None) -> None:
 
 
 def availability(category: str, record_path: Optional[Path] = None) -> tuple:
-    """-> (enabled, reason). Fire and crash: always. Fall / violence / snatching are SCRIPTED demo incidents: enabled when the clip
-    and its entry in data/demo/demo_events.yaml are valid (and the REPLACE_ME marker is gone). No detector is consulted."""
+    """-> (enabled, reason). reason is "" when enabled."""
     category = ALIASES.get(category, category)
     if category in ("fire", "road_accident", "crash"):
         return True, ""
     if category not in ACTION_DEMO:
         return False, f"unknown category {category!r}"
-    from api.services import demo_events
-    return demo_events.availability(category)
+    _det, clip, _label = ACTION_DEMO[category]
+    path = ROOT / clip
+    if not path.exists():
+        return False, f"clip missing: {clip}"
+    rec = load_record(record_path).get(category)
+    if not rec:
+        return False, "clip not verified yet: run scripts/demo_clips_check.py"
+    if rec.get("sha256") != sha256_of(path):
+        return False, "clip changed since it was last checked: rerun scripts/demo_clips_check.py"
+    if not rec.get("fired"):
+        return False, "detector did not fire on the sample clip (see docs/DEMO_CLIPS_CHECK.md)"
+    return True, ""
 
 
 def categories(record_path: Optional[Path] = None) -> list:
-    from api.services import demo_events
-    out = [{"category": c, "label": label, "enabled": True, "reason": "", "experimental": False, "scripted": False} for c, label in BASE_CATEGORIES]
-    cfg = demo_events.load()                       # one load (opens each clip once) for all three
+    out = [{"category": c, "label": label, "enabled": True, "reason": "", "experimental": False} for c, label in BASE_CATEGORIES]
     for cat, (_det, _clip, label) in ACTION_DEMO.items():
-        key = demo_events.key_for(cat)
-        if cfg["placeholder"]:
-            ok, reason = False, demo_events.PLACEHOLDER_REASON
-        elif key in cfg["events"]:
-            ok, reason = True, ""
-        else:
-            ok, reason = False, cfg["errors"].get(key, "not configured")
-        out.append({"category": cat, "label": label, "enabled": ok, "reason": reason, "experimental": True, "scripted": True})
+        ok, reason = availability(cat, record_path)
+        out.append({"category": cat, "label": label, "enabled": ok, "reason": reason, "experimental": True})
     return out
