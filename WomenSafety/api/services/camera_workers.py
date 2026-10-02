@@ -15,7 +15,7 @@ from api.models.camera import all_cameras, get_camera, resolve_stream_source, st
 from api.models.incident_v2 import SourceKind
 from api.services import incident_service_v2 as incidents
 from api.services.action_detectors import ACTION_NAMES, ActionEngine
-from api.services.action_detectors.pose import pose_weights_path
+from api.services.action_detectors.runtime import ActionRuntime
 from api.services.detector_interface import DetectorRegistry
 from api.services.event_capture import EventCapturePipeline
 from api.services.frame_sampler import RealtimeFrameGate
@@ -84,36 +84,22 @@ class CameraWorker:
         # fire+crash, exactly the previous behaviour; an action detector never runs unless it is listed.
         self.detectors = camera.active_detectors
         self._fc_times: deque = deque(maxlen=64)   # fire/crash sampled-frame times, for the effective fps the throttle reads
-        self.action: Optional[ActionEngine] = None
+        self.action: Optional[ActionEngine] = None          # the runtime's engine (None when no action detector is listed)
         self.action_pipelines: dict = {}
+        self.action_runtime: Optional[ActionRuntime] = None
         names = [n for n in self.detectors if n in ACTION_NAMES]
         if names:
             self._init_action(names)
 
     def _init_action(self, names):
-        engine = ActionEngine(self.camera.camera_id, names, on_verdict=self._action_verdict)
-        if not engine.enabled:
+        # engine_factory is looked up at call time so tests can patch camera_workers.ActionEngine
+        runtime = ActionRuntime(self.camera.camera_id, names, self._incident_ready, self._quarantine, self.pipeline.pre_buffer,
+                                engine_factory=lambda *a, **k: ActionEngine(*a, **k))
+        if not runtime.enabled:
             print(f"[{self.camera.camera_id}] action detectors {names} requested but the pose model is unavailable; skipped")
             return
-        path = pose_weights_path()
-        import hashlib
-        self._pose_weights = (str(path), hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None)
-        for d in engine.detectors:
-            # one pipeline per action detector (own confirmation / end / merge settings), sharing this camera's ring buffer
-            self.action_pipelines[d.name] = EventCapturePipeline(
-                self.camera.camera_id, self._incident_ready, self._quarantine,
-                confirm_n=d.confirm_n, confirm_m=d.confirm_m, end_gap_s=d.end_gap_s, merge_s=d.merge_s,
-                shared_pre_buffer=self.pipeline.pre_buffer, overlay_best_frame=True)
-        self.action = engine
-        print(f"[{self.camera.camera_id}] EXPERIMENTAL action detectors on: {[d.name for d in engine.detectors]}")
-
-    def _action_verdict(self, detector, result, frame, ts, video_offset_s):
-        file, sha = self._pose_weights if detector.name != "violence" else (None, None)
-        self.action_pipelines[detector.name].feed_detection(
-            frame, ts, detector.category if result.detected else None, result.score if result.detected else 0.0,
-            result.boxes if result.detected else [], detector.detector_source, detector.model_name, detector.threshold,
-            weights_file=file, weights_sha256=sha, video_offset_s=video_offset_s,
-            signals=result.signals, experimental=True)
+        self.action_runtime, self.action, self.action_pipelines = runtime, runtime.engine, runtime.pipelines
+        print(f"[{self.camera.camera_id}] EXPERIMENTAL action detectors on: {[d.name for d in runtime.engine.detectors]}")
 
     def _fire_crash_fps(self, now: float) -> Optional[float]:
         recent = [t for t in self._fc_times if now - t <= 8.0]

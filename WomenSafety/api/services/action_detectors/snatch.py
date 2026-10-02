@@ -50,7 +50,7 @@ class SnatchDetector(ActionDetector):
         sa, sb = dict(((t, p) for t, p in _series(window, ida))), dict(((t, p) for t, p in _series(window, idb)))
         times = sorted(set(sa) & set(sb))
         if len(times) < 4:
-            return None
+            return {"blocked": "pair not tracked together for 4+ samples"}
         H = max(float(np.median([sa[t].h for t in times])), float(np.median([sb[t].h for t in times])), 1.0)
         ca = {t: sa[t].center / H for t in times}
         cb = {t: sb[t].center / H for t in times}
@@ -65,7 +65,7 @@ class SnatchDetector(ActionDetector):
                 contact = (t, far[-1])
                 break
         if contact is None:
-            return None
+            return {"blocked": f"no sudden approach (separation never fell from >= {s.SNATCH_FAR} to <= {s.SNATCH_NEAR} body heights within {s.SNATCH_APPROACH_S} s)"}
         t_n, t_f = contact
         # B's approach speed over [t_f, t_n]
         app = [u for u in times if t_f <= u <= t_n]
@@ -74,7 +74,7 @@ class SnatchDetector(ActionDetector):
         # flee phase
         after = [u for u in times if t_n <= u <= t_n + s.SNATCH_FLEE_S]
         if len(after) < 2:
-            return None
+            return {"blocked": "pair lost right after contact (fewer than 2 samples in the flee window)"}
         flee_speed = 0.0
         for k in range(1, len(after)):
             dt = max(after[k] - after[k - 1], 1e-3)
@@ -92,24 +92,41 @@ class SnatchDetector(ActionDetector):
                  and sep >= s.SNATCH_SEPARATE and away and na < 0.5 * max(nb, 1e-6))
         cap = lambda v, thr: min(1.0, v / (1.5 * thr))
         score = float(np.mean([cap(closing, far_gap), cap(ratio, s.SNATCH_ACCEL_RATIO), cap(flee_speed, s.SNATCH_FLEE_SPEED), cap(sep, s.SNATCH_SEPARATE)]))
-        return {"rules": rules, "score": score, "t": t_n,
+        failed = []
+        if closing < far_gap:
+            failed.append(f"approach closing speed {closing:.2f} < {far_gap:.2f}")
+        if flee_speed < s.SNATCH_FLEE_SPEED:
+            failed.append(f"flee speed {flee_speed:.2f} < {s.SNATCH_FLEE_SPEED} body heights/s")
+        if ratio < s.SNATCH_ACCEL_RATIO:
+            failed.append(f"acceleration ratio {ratio:.2f} < {s.SNATCH_ACCEL_RATIO}")
+        if sep < s.SNATCH_SEPARATE:
+            failed.append(f"separation {sep:.2f} < {s.SNATCH_SEPARATE}")
+        if not away:
+            failed.append("runner not moving away from the target")
+        if not na < 0.5 * max(nb, 1e-6):
+            failed.append("target moved along with the runner")
+        return {"rules": rules, "score": score, "t": t_n, "failed": failed,
                 "signals": {"target_track": int(ida), "runner_track": int(idb), "approach_closing_speed": r3(closing),
                             "approach_speed": r3(approach_speed), "flee_speed": r3(flee_speed), "acceleration_ratio": r3(ratio),
                             "separation": r3(sep), "diverging_angle_deg": r3(angle), "target_speed": r3(na)}}
 
     def detect(self, window: list) -> ActionResult:
         ids = sorted({p.track_id for pf in window for p in pf.persons})
-        best = None
+        best, blocked = None, []
         for ida in ids:
             for idb in ids:
                 if ida == idb:
                     continue
                 res = self._pair(window, ida, idb)
-                if res and (best is None or (res["rules"], res["score"]) > (best["rules"], best["score"])):
+                if res and "blocked" in res:
+                    blocked.append(res["blocked"])
+                elif res and (best is None or (res["rules"], res["score"]) > (best["rules"], best["score"])):
                     best = res
         if best is None:
-            return ActionResult(detected=False, label="snatch")
+            return ActionResult(detected=False, label="snatch", signals={"blocked_by": sorted(set(blocked))} if blocked else {"blocked_by": ["fewer than 2 tracked persons"]})
         detected = bool(best["rules"] and best["score"] >= self.threshold)
+        if not detected:
+            best["signals"]["blocked_by"] = best["failed"] or [f"score {best['score']:.2f} < threshold {self.threshold}"]
         boxes = []
         if detected:
             last = {}

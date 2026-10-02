@@ -80,8 +80,14 @@ class FallDetector(ActionDetector):
 
     # --- core ------------------------------------------------------------------
     def _transition(self, samples: list) -> Optional[dict]:
-        """samples: [(t, feat)] oldest..newest of ONE track. Returns the fall evidence or None."""
-        if len(samples) < 3 or not self._is_down(samples[-1][1]):
+        """samples: [(t, feat)] oldest..newest of ONE track. Returns the fall evidence or None.
+        self._why records, for diagnostics only, why the last call returned None."""
+        self._why = None
+        if len(samples) < 3:
+            self._why = "track too short (fewer than 3 samples)"
+            return None
+        if not self._is_down(samples[-1][1]):
+            self._why = "person never reached a down posture (torso not near horizontal, box not wider than tall)"
             return None
         i_d = len(samples) - 1                                   # first sample of the trailing run of 'down'
         while i_d > 0 and self._is_down(samples[i_d - 1][1]):
@@ -92,11 +98,13 @@ class FallDetector(ActionDetector):
                 i_u = k
                 break
         if i_u is None:
+            self._why = "no upright sample before the down posture (person was already low / entered lying)"
             return None
         t_u, fu = samples[i_u]
         t_d, fd = samples[i_d]
         transition_s = t_d - t_u
         if transition_s > settings.FALL_TRANSITION_S + 1e-6:
+            self._why = f"upright-to-down transition too slow ({transition_s:.2f} s > {settings.FALL_TRANSITION_S} s)"
             return None                                          # too slow: lying down on purpose
         ref = max(fu["h"], 1.0)                                  # standing height of this person
         head_drop = (fd["head_y"] - fu["head_y"]) / ref
@@ -129,6 +137,7 @@ class FallDetector(ActionDetector):
             persons[p.track_id] = p
 
         best: Optional[ActionResult] = None
+        reasons: list = []
         for tid, samples in by_track.items():
             p = persons.get(tid)
             if p is None:                                        # not in the newest frame
@@ -154,6 +163,8 @@ class FallDetector(ActionDetector):
                 stay = latest.t - ev["t_down"]
                 ev_use = ev
             else:
+                if getattr(self, "_why", None):
+                    reasons.append(self._why)
                 continue
             ok = (ev_use["head_drop"] >= s.FALL_HEAD_DROP_FRAC and ev_use["hip_drop"] >= s.FALL_HIP_DROP_FRAC
                   and ev_use["vel"] >= s.FALL_DROP_VEL and stay >= s.FALL_STAY_DOWN_S)
@@ -169,8 +180,23 @@ class FallDetector(ActionDetector):
                 "aspect_ratio": r3(f_last["aspect"]), "aspect_flip": bool(f_last["aspect"] >= s.FALL_ASPECT_FLIP),
                 "stay_down_s": r3(stay), "stay_down_required_s": s.FALL_STAY_DOWN_S,
             }
+            if not detected:
+                failed = []
+                if ev_use["head_drop"] < s.FALL_HEAD_DROP_FRAC:
+                    failed.append(f"head drop {ev_use['head_drop']:.2f} < {s.FALL_HEAD_DROP_FRAC}")
+                if ev_use["hip_drop"] < s.FALL_HIP_DROP_FRAC:
+                    failed.append(f"hip drop {ev_use['hip_drop']:.2f} < {s.FALL_HIP_DROP_FRAC}")
+                if ev_use["vel"] < s.FALL_DROP_VEL:
+                    failed.append(f"drop velocity {ev_use['vel']:.2f} < {s.FALL_DROP_VEL}")
+                if stay < s.FALL_STAY_DOWN_S:
+                    failed.append(f"stay-down {stay:.1f} s < {s.FALL_STAY_DOWN_S} s")
+                if not failed:
+                    failed.append(f"score {score:.2f} < threshold {self.threshold}")
+                signals["blocked_by"] = failed
             res = ActionResult(detected=detected, score=score, label="fall", signals=signals,
                                boxes=[person_box(p, "fall (experimental)", score)] if detected else [])
             if best is None or (res.detected, res.score) > (best.detected, best.score):
                 best = res
-        return best or ActionResult(detected=False, score=0.0, label="fall")
+        if best is not None:
+            return best
+        return ActionResult(detected=False, score=0.0, label="fall", signals={"blocked_by": sorted(set(reasons))} if reasons else {})

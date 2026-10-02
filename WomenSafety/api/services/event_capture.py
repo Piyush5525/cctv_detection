@@ -423,9 +423,17 @@ class EventCapturePipeline:
             if self._active is not None:
                 self._end_event(ts)
 
+    def close(self):
+        """Stops the encoder thread once everything queued so far has been built (replays create short-lived
+        pipelines; this keeps them from leaking one idle thread each). The live pipelines never call it."""
+        self._encode_queue.put(None)
+
     def _encoder_loop(self):
         while True:
             ev: ActiveEvent = self._encode_queue.get()
+            if ev is None:
+                self._encode_queue.task_done()
+                return
             t0 = time.time()
             try:
                 evidence = self._build_evidence(ev)
