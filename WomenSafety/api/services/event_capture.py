@@ -103,11 +103,12 @@ class FrameSample:
     confidence: float
     boxes: list  # [{label, conf, box}]
     video_offset_s: Optional[float] = None
+    best: bool = False  # scripted demo events only: the frame chosen as the best frame (no score exists)
 
     @staticmethod
     def from_ndarray(frame: np.ndarray, timestamp: datetime, confidence: float, boxes: list,
-                      video_offset_s: Optional[float] = None) -> "FrameSample":
-        return FrameSample(_encode_jpeg(frame), timestamp, confidence, boxes, video_offset_s)
+                      video_offset_s: Optional[float] = None, best: bool = False) -> "FrameSample":
+        return FrameSample(_encode_jpeg(frame), timestamp, confidence, boxes, video_offset_s, best)
 
     def decode(self) -> np.ndarray:
         return _decode_jpeg(self.frame)
@@ -130,6 +131,7 @@ class ActiveEvent:
     signals: dict = field(default_factory=dict)
     peak_score: float = 0.0
     experimental: bool = False
+    scripted: bool = False   # demo script, not a detector: no score, no threshold, best frame chosen by the script
 
 
 # COCO skeleton for the best-frame overlay (drawn into an image only; keypoints are never persisted as data).
@@ -140,9 +142,10 @@ def _draw_overlay(img: np.ndarray, boxes: list) -> None:
     for b in boxes:
         try:
             x1, y1, x2, y2 = [int(v) for v in b["box"]]
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            cv2.putText(img, f"{b['label']} {b['confidence']:.2f}" if "confidence" in b else b["label"],
-                        (x1, max(0, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            if not b.get("skeleton_only"):
+                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                cv2.putText(img, f"{b['label']} {b['confidence']:.2f}" if "confidence" in b else b["label"],
+                            (x1, max(0, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
             kp = b.get("keypoints")
             if kp:
                 for a, c in SKELETON_EDGES:
@@ -253,7 +256,8 @@ class EventCapturePipeline:
         self.last_logged_fps: float = 0.0
         self.last_encode_time_s: float = 0.0
 
-    def add_raw_frame(self, frame: np.ndarray, ts: datetime, video_offset_s: Optional[float] = None):
+    def add_raw_frame(self, frame: np.ndarray, ts: datetime, video_offset_s: Optional[float] = None, best: bool = False,
+                      best_boxes: Optional[list] = None):
         """Call on EVERY frame the camera produces, regardless of the
         detection sampling interval (sampling frame-sampler unification):
         keeps the pre-event ring buffer, and an already-active event's
@@ -270,7 +274,7 @@ class EventCapturePipeline:
             self.pre_buffer.add(frame, ts)
         with self._lock:
             if self._active is not None:
-                sample = FrameSample.from_ndarray(frame, ts, 0.0, [], video_offset_s)
+                sample = FrameSample.from_ndarray(frame, ts, 0.0, best_boxes or [], video_offset_s, best)
                 self._active.frames.append(sample)
                 self._last_raw_sample = sample  # feed_detection() may update this in place if sampled
 
@@ -396,6 +400,25 @@ class EventCapturePipeline:
         print(f"[EventCapture:{self.camera_id}] EVENT START category={category} at {ts.isoformat()} "
               f"(confirmed {n} of {m})" + (f" video_offset_s={video_offset_s:.2f}" if video_offset_s is not None else ""))
 
+    def start_scripted_event(self, category: str, ts: datetime, frame: np.ndarray, video_offset_s: Optional[float] = None,
+                             best: bool = False, best_boxes: Optional[list] = None) -> None:
+        """Scripted demo incident (api/services/demo_trigger.py): opens an event WITHOUT any detector verdict. Same ring
+        buffer pre-event frames, same encoder and evidence writer as every other event; no confirmation counting, no
+        score, no threshold. Frames after this one come from add_raw_frame(); finish with finish_scripted_event()."""
+        with self._lock:
+            pre_frames = [FrameSample(f, t, 0.0, []) for f, t in self.pre_buffer.snapshot() if t < ts]
+            self._active = ActiveEvent(
+                category=category, event_start=ts, last_detection_at=ts, confirmations="scripted", detector_source="scripted_demo",
+                model_name="scripted_demo", experimental=True, scripted=True,
+                frames=pre_frames + [FrameSample.from_ndarray(frame, ts, 0.0, best_boxes or [], video_offset_s, best)])
+        print(f"[EventCapture:{self.camera_id}] SCRIPTED EVENT START category={category} at {ts.isoformat()}")
+
+    def finish_scripted_event(self, end_ts: datetime) -> None:
+        with self._lock:
+            if self._active is not None:
+                self._active.last_detection_at = end_ts
+                self._end_event(end_ts)
+
     def _end_event(self, ts: datetime):
         ev = self._active
         self._active = None
@@ -466,10 +489,16 @@ class EventCapturePipeline:
         evidence -- the caller quarantines the incident but the
         best-frame files stay on disk and their paths are in the
         quarantine reason, not silently orphaned."""
-        hit_frames = [fs for fs in ev.frames if fs.confidence > 0]
-        if not hit_frames:
-            raise RuntimeError("event had no confirmed-detection frames to pick a best frame from")
-        best = max(hit_frames, key=lambda fs: fs.confidence)
+        if ev.scripted:
+            hit_frames = [fs for fs in ev.frames if fs.best]       # the script's chosen best frame; no detector score exists
+            if not hit_frames:
+                raise RuntimeError("scripted event has no best frame")
+            best = hit_frames[0]
+        else:
+            hit_frames = [fs for fs in ev.frames if fs.confidence > 0]
+            if not hit_frames:
+                raise RuntimeError("event had no confirmed-detection frames to pick a best frame from")
+            best = max(hit_frames, key=lambda fs: fs.confidence)
 
         # This incident_id is also used as the real Incident.incident_id
         # (see incident_service_v2.handle_finished_event, which is passed
@@ -486,7 +515,10 @@ class EventCapturePipeline:
         annotated = best_decoded.copy()
         _draw_overlay(annotated, best.boxes)
         annotated_path = day_dir / "annotated_frame.jpg"
-        cv2.imwrite(str(annotated_path), annotated)
+        if ev.scripted and not best.boxes:
+            annotated_path = None          # nothing real to draw: no annotated frame, no overlay of any kind
+        else:
+            cv2.imwrite(str(annotated_path), annotated)
         if self.overlay_best_frame:
             # Action detectors: the peak-score frame WITH the box/skeleton overlay is the best frame
             # (it is what Telegram and the dashboard show first).
@@ -515,7 +547,7 @@ class EventCapturePipeline:
         partial_evidence = {
             "incident_id": incident_id,
             "best_frame_path": str(best_frame_path),
-            "annotated_frame_path": str(annotated_path),
+            "annotated_frame_path": str(annotated_path) if annotated_path else None,
             "thumbnail_path": str(thumb_path),
             "sha256_frame": _sha256_file(best_frame_path),
             "best": best,

@@ -34,6 +34,16 @@ def is_experimental(incident: dict) -> bool:
     return bool((incident.get("detection") or {}).get("experimental")) or str(incident.get("category")) in EXPERIMENTAL_CATEGORIES
 
 
+SCRIPTED_TAG = "SCRIPTED DEMO"
+SCRIPTED_SPOKEN = {"fall": "fall", "assault": "violence", "snatching": "snatching"}
+
+
+def is_scripted(incident: dict) -> bool:
+    """A scripted demo incident: category set by the demo script, not a detector result (nothing scored)."""
+    d = incident.get("detection") or {}
+    return bool(d.get("scripted")) or d.get("detector_source") == "scripted_demo"
+
+
 def auto_call_allowed(category: str) -> bool:
     """Alert policy: only AUTO_CALL_CATEGORIES (default fire, crash) may ever be called automatically.
     Everything else -- every experimental detector -- is dashboard + Telegram only; a call needs the operator's
@@ -45,6 +55,8 @@ def auto_call_allowed(category: str) -> bool:
 
 def experimental_note(incident: dict) -> str:
     d = incident.get("detection") or {}
+    if is_scripted(incident):
+        return f"{SCRIPTED_TAG}, {EXPERIMENTAL_TAG}: category set by the demo script, not a detector result."
     return f"{EXPERIMENTAL_TAG} detection, confidence {float(d.get('peak_confidence', 0.0)):.2f}, threshold {float(d.get('threshold_applied', 0.0)):.2f}."
 
 
@@ -65,6 +77,10 @@ def build_call_message(incident: dict, plan: Optional[dict]) -> str:
     else:
         nearest = f"Nearest {label}: unavailable."
     body = f"{category} detected at {place}. {nearest}"
+    if is_scripted(incident):
+        # exact wording required for scripted incidents: "Scripted demo incident: <category> at <place>. Nearest <service>: <name>, <distance> kilometres."
+        spoken = SCRIPTED_SPOKEN.get(raw_category, raw_category.replace("_", " "))
+        return f"{settings.CALL_MESSAGE_PREFIX.strip()} Scripted demo incident: {spoken} at {place}. {nearest}".strip()
     if is_experimental(incident):
         body = f"{experimental_note(incident)} {body}"
     prefix = settings.CALL_MESSAGE_PREFIX.strip() if settings.DEMO_MODE else ""
@@ -169,6 +185,14 @@ class NotificationService:
         # experimental detectors are noisier: never a shorter cooldown than ACTION_COOLDOWN_S (per camera + category)
         return max(base, settings.ACTION_COOLDOWN_S) if category in EXPERIMENTAL_CATEGORIES else base
 
+    def cooldown_remaining(self, camera_id: str, category: str) -> float:
+        """Seconds left of the outbound cooldown for this camera + category (0 if none). Read-only."""
+        with self._lock:
+            previous = self._last_by_key.get((camera_id, category))
+        if previous is None:
+            return 0.0
+        return max(0.0, self._cooldown_seconds(category) - (time.monotonic() - previous))
+
     def _cooldown_active(self, key: tuple) -> bool:
         """True if an outbound alert for this camera+category went out within
         the cooldown window; otherwise stamps now and returns False."""
@@ -222,7 +246,7 @@ class NotificationService:
         import telebot
         markup = telebot.types.InlineKeyboardMarkup()  # empty keyboard == buttons removed
         buttons = []
-        experimental = str(state.get("head", "")).startswith(EXPERIMENTAL_TAG)  # also true after an API restart (rebuilt from the message)
+        experimental = str(state.get("head", "")).startswith((EXPERIMENTAL_TAG, SCRIPTED_TAG))  # also true after an API restart (rebuilt from the message)
         if not state["ack"] and not state["fp"]:
             buttons.append(telebot.types.InlineKeyboardButton("Acknowledge" if experimental else "Acknowledge (stops auto-call)", callback_data=f"incident:{incident_id}:confirm"))
         if not state["fp"]:
@@ -361,7 +385,16 @@ class NotificationService:
     def _compute_plan(self, incident: dict) -> dict:
         category = incident["category"]
         try:
-            lookup = get_nearby_services(incident["camera_id"], incident["latitude"], incident["longitude"], incident["place_text"])
+            if is_scripted(incident):
+                from api.services.nearby_services import lookup_cached
+                lookup = lookup_cached(incident["latitude"], incident["longitude"])
+                if lookup is None:       # no SerpApi call for scripted incidents; nothing is fabricated
+                    plan = build_dispatch_plan(category, incident["latitude"], incident["longitude"], {})
+                    plan["nearby_services_source"] = "unavailable"
+                    plan["note"] = "No cached services lookup for this location (scripted demo incidents never call SerpApi): services shown as unavailable."
+                    return plan
+            else:
+                lookup = get_nearby_services(incident["camera_id"], incident["latitude"], incident["longitude"], incident["place_text"])
             plan = build_dispatch_plan(category, incident["latitude"], incident["longitude"], lookup.get("services", {}))
             plan["nearby_services_source"] = lookup.get("source")
             if lookup.get("errors"):
@@ -447,15 +480,20 @@ class NotificationService:
             self._record(incident_id, "call", "suppressed", "configured demo phone", "suppressed: cooldown")
             return
         self._send_telegram(incident, plan)
+        if is_scripted(incident) and settings.SCRIPTED_AUTO_CALL and settings.DEMO_MODE:
+            # Scripted incidents: opt-in "call after delay" (Demo panel toggle). Ignored when DEMO_MODE is false. The call still goes
+            # through _send_call_if_still_needed: ALERTS_ENABLED, DEMO_DRY_RUN, allowlist, hard-blocked numbers, call cap, Acknowledge.
+            self._schedule_call(incident_id, incident, settings.DEMO_ESCALATION_DELAY_S)
+            return
         if not auto_call_allowed(category):
             # Alert policy: dashboard + Telegram only. No timer, no call -- the call happens ONLY if an operator
             # presses "Escalate now" (process_press -> _send_call_if_still_needed(source="operator")).
             self._record(incident_id, "call", "manual_only", "configured demo phone",
-                         f"{EXPERIMENTAL_TAG if is_experimental(incident) else category}: no automatic call; operator 'Escalate now' only")
+                         f"{SCRIPTED_TAG if is_scripted(incident) else EXPERIMENTAL_TAG if is_experimental(incident) else category}: no automatic call; operator 'Escalate now' only")
             return
         # A high-confidence detection bypasses the wait. Otherwise the call
         # remains an escalation only if no operator has dismissed it.
-        confidence = float(incident.get("detection", {}).get("peak_confidence", 0.0))
+        confidence = float((incident.get("detection") or {}).get("peak_confidence") or 0.0)
         configured_delay = settings.DEMO_ESCALATION_DELAY_S if settings.DEMO_MODE else settings.ESCALATION_DELAY_S
         delay = 0.0 if confidence >= settings.CALL_MIN_CONFIDENCE else configured_delay
         self._schedule_call(incident_id, incident, delay)
@@ -486,14 +524,25 @@ class NotificationService:
             return False
         nearest = self._nearest_lines(plan)
         experimental = is_experimental(incident)
+        scripted = is_scripted(incident)
         shown = CATEGORY_SPOKEN.get(str(incident["category"]), str(incident["category"])) if experimental else incident["category"]
-        head = ((f"{EXPERIMENTAL_TAG} detection - verify before acting\n" if experimental else "") +
-                f"Incident: {shown}\nCamera: {incident['camera_name']}\nPlace: {incident['place_text']}\n"
-                f"Time: {incident.get('detected_at', _now())}\nPeak confidence: {incident['detection']['peak_confidence']:.2f}\n"
-                f"Threshold: {incident['detection']['threshold_applied']:.2f}")
+        if scripted:
+            shown = {"fall": "Fall", "assault": "Violence", "snatching": "Snatching"}.get(str(incident["category"]), shown)
+            head = (f"{SCRIPTED_TAG} - {EXPERIMENTAL_TAG}: not a detector result\nIncident: {shown}\nCamera: {incident['camera_name']}\n"
+                    f"Place: {incident['place_text']}\nTime: {incident.get('detected_at', _now())}\nConfidence: not scored")
+        else:
+            head = ((f"{EXPERIMENTAL_TAG} detection - verify before acting\n" if experimental else "") +
+                    f"Incident: {shown}\nCamera: {incident['camera_name']}\nPlace: {incident['place_text']}\n"
+                    f"Time: {incident.get('detected_at', _now())}\nPeak confidence: {incident['detection']['peak_confidence']:.2f}\n"
+                    f"Threshold: {incident['detection']['threshold_applied']:.2f}")
         services = nearest or ["unavailable"]
-        footer = ("Experimental detector: no automatic call. Press Escalate now to place a call; False alarm to dismiss it." if experimental
-                  else "Tap Acknowledge to stop the automatic call; False alarm to dismiss it.")
+        if scripted:
+            footer = ("Scripted demo: a call follows after the delay unless you tap Acknowledge." if (settings.SCRIPTED_AUTO_CALL and settings.DEMO_MODE)
+                      else "Scripted demo: no automatic call. Press Escalate now to place a call; False alarm to dismiss it.")
+        elif experimental:
+            footer = "Experimental detector: no automatic call. Press Escalate now to place a call; False alarm to dismiss it."
+        else:
+            footer = "Tap Acknowledge to stop the automatic call; False alarm to dismiss it."
         caption = compose_caption(head, services, [], footer=footer)
         try:
             import telebot
@@ -546,6 +595,9 @@ class NotificationService:
         def skipped(reason: str) -> None:
             self._tg_note(incident_id, f"{who} skipped: {reason}")
 
+        if auto and is_scripted(incident) and not settings.DEMO_MODE:
+            self._record(incident_id, "call", "skipped", "configured demo phone", "scripted auto-call ignored: DEMO_MODE is false")
+            return skipped("scripted auto-call ignored: DEMO_MODE is false")
         # ALERTS_ENABLED gates EVERY outbound call, including a stale "Escalate now" button pressed after alerts were turned off.
         enabled = alerts_enabled_check()
         if not enabled.allowed:

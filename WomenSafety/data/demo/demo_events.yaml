@@ -1,0 +1,37 @@
+# Scripted demo events (fall, violence, snatching).
+#
+# These incidents are SCRIPTED: the demo script creates them from your clips. NO detector runs on the clips, nothing is scored,
+# and the dashboard, Telegram caption and call text all say "SCRIPTED DEMO". Use them only to show the flow
+# (map -> evidence -> dispatch -> Telegram -> call), never as proof that a detector works.
+#
+# TODO (you): watch each clip and set the REAL seconds below, then DELETE the "REPLACE_ME: true" line.
+# While that line is present every scripted trigger is refused and the three categories show as unavailable in the Demo panel.
+#
+# Per class:
+#   clip           path inside data/demo/ (the clip you provided)
+#   event_start_s  where the event starts (the clip also includes up to 8 pre-event seconds before this)
+#   event_end_s    where the event ends
+#   best_frame_s   the frame shown as the photo; must be inside [event_start_s, event_end_s]
+#   place_note     optional free text kept in the evidence note
+# Values must fit the clip: 0 <= event_start_s < event_end_s <= clip length. fall.mp4 is 20.05 s, violence.mp4 19.43 s, snatch.mp4 30.0 s.
+
+REPLACE_ME: true      # example values below are placeholders, not the real events
+
+fall:
+  clip: data/demo/fall.mp4
+  event_start_s: 4.0
+  event_end_s: 12.0
+  best_frame_s: 8.0
+  # place_note: near the entrance
+
+violence:
+  clip: data/demo/violence.mp4
+  event_start_s: 3.0
+  event_end_s: 15.0
+  best_frame_s: 8.0
+
+snatching:
+  clip: data/demo/snatch.mp4
+  event_start_s: 8.0
+  event_end_s: 22.0
+  best_frame_s: 14.0

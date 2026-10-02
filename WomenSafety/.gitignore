@@ -57,3 +57,6 @@ data/demo/**/*.mp4
 data/demo/_originals/
 demo/*.mp4*
 discovery/cache/
+
+# Screenshots of the provided action clips stay local (see data/demo/SOURCES.md)
+docs/screenshots/scripted_*.png

@@ -160,6 +160,12 @@ class Settings(BaseSettings):
     # DEMO_DRY_RUN: Telegram stays real, but NO call is ever placed (recorded "suppressed: dry run"). Can also be
     # flipped at runtime from the Demo panel (POST /api/v1/demo/dry-run, audited).
     DEMO_DRY_RUN: bool = False
+    # Scripted demo incidents (fall / violence / snatching from data/demo/demo_events.yaml). No detector runs on them.
+    # SCRIPTED_AUTO_CALL (default false; Demo panel toggle): when true AND DEMO_MODE is true, a scripted incident that is not
+    # acknowledged is called after DEMO_ESCALATION_DELAY_S. Still allowlist-only, ALERTS_ENABLED, DEMO_DRY_RUN, cooldown, call cap
+    # and hard-blocked numbers apply; ignored when DEMO_MODE is false.
+    SCRIPTED_AUTO_CALL: bool = False
+    DEMO_EVENTS_PATH: Path = Path(__file__).parent.parent.parent / "data" / "demo" / "demo_events.yaml"
     DEMO_PHONE_NUMBER: str = ""
     # If set, Telegram sends are restricted to exactly this chat_id
     # (DEMO_MODE allowlist) -- defaults to TELEGRAM_CHAT_ID itself when

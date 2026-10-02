@@ -4,7 +4,7 @@
 
 Each step POSTs /api/v1/demo/trigger (X-Demo-Token from DEMO_TOKEN in WomenSafety/.env, never printed), then watches
 the incident's notification timeline for a few seconds. A category that cannot run (clip missing, or the real
-detector did not fire on the provided clip) is reported as SKIPPED with the reason: nothing is forced.
+clip or demo_events.yaml entry missing or invalid, REPLACE_ME marker still present) is reported as SKIPPED with the reason: nothing is forced.
 
 WARNING: against an API with ALERTS_ENABLED=true this sends REAL Telegram messages, and (for fire/crash, unless
 --dry-run) can place a REAL call after the escalation delay. --dry-run turns on DRY RUN for the run (Telegram stays
@@ -22,9 +22,9 @@ from dotenv import dotenv_values
 ROOT = Path(__file__).resolve().parent.parent
 ALIASES = {"crash": "road_accident", "violence": "assault", "snatch": "snatching", "snatching": "snatching"}
 HOW = {"fire": "auto-call after the delay unless acknowledged", "road_accident": "auto-call after the delay unless acknowledged",
-       "fall": "EXPERIMENTAL: Telegram + dashboard, NO auto-call (Escalate now only)",
-       "assault": "EXPERIMENTAL: Telegram + dashboard, NO auto-call (Escalate now only)",
-       "snatching": "EXPERIMENTAL: Telegram + dashboard, NO auto-call (Escalate now only)"}
+       "fall": "SCRIPTED DEMO, EXPERIMENTAL: no detector runs; Telegram + dashboard, no auto-call unless the scripted toggle is on",
+       "assault": "SCRIPTED DEMO, EXPERIMENTAL: no detector runs; Telegram + dashboard, no auto-call unless the scripted toggle is on",
+       "snatching": "SCRIPTED DEMO, EXPERIMENTAL: no detector runs; Telegram + dashboard, no auto-call unless the scripted toggle is on"}
 
 
 def main() -> int:
@@ -95,7 +95,7 @@ def main() -> int:
                     pname = (primary.get("service") or {}).get("title") or primary.get("status", "n/a")
                     det = full.get("detection", {})
                     print(f"{stamp()}    incident {iid[:8]} category={full['category']} source={full['source']} experimental={det.get('experimental', False)} "
-                          f"score={det.get('peak_confidence')} thr={det.get('threshold_applied')} primary service ({primary.get('service_category')}): {pname}")
+                          f"{'confidence=not scored (scripted demo)' if det.get('scripted') else 'score=' + str(det.get('peak_confidence')) + ' thr=' + str(det.get('threshold_applied'))} primary service ({primary.get('service_category')}): {pname}")
                     rows.append((cat, "created", f"{iid[:8]} calls={[n['status'] for n in full['notifications'] if n['channel'] == 'call']}"))
             if i < len(steps) - 1:
                 print(f"{stamp()} waiting {args.delay:g}s ...")

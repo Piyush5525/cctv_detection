@@ -82,6 +82,13 @@ const categoryIcon = (cat) => CATEGORY_ICONS[cat] || ''
 const categoryLabel = (cat) =>
   CATEGORY_NAMES[cat] || (cat || 'unknown').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 
+// SCRIPTED demo incident: category set by the demo script, not a detector result (nothing scored)
+const isScripted = (inc) => !!(inc?.scripted || inc?.detection?.scripted || inc?.detection?.detector_source === 'scripted_demo')
+
+function ScriptedBadge() {
+  return <span className="honesty-badge scripted-badge" title="Scripted demo incident: the category was set by the demo script, not by a detector. Nothing was scored.">SCRIPTED DEMO</span>
+}
+
 function ExperimentalBadge() {
   return <span className="honesty-badge exp-badge" title="Experimental detector: verify before acting. It never calls automatically.">EXPERIMENTAL</span>
 }
@@ -169,9 +176,10 @@ function HoverPopup({ group, onPin }) {
             <span className="hover-category" style={{ color: categoryColor(item.category) }}>
               {categoryIcon(item.category)} {categoryLabel(item.category)}
             </span>
+            {isScripted(item) && <ScriptedBadge />}
             {isExperimental(item) && <ExperimentalBadge />}
             <span>{fmtTime(item.event_start)}</span>
-            <span>Conf: {(item.peak_confidence ?? 0).toFixed(2)}</span>
+            <span>{isScripted(item) ? 'Confidence: Not scored' : `Conf: ${(item.peak_confidence ?? 0).toFixed(2)}`}</span>
           </div>
           {/* Slide indicator dots */}
           {rows.length > 1 && (
@@ -252,6 +260,7 @@ function DetailPanel({ incident, group, onClose, hot, onHot }) {
 
       {/* Honesty badges */}
       <div className="detail-badges">
+        {isScripted(incident) && <ScriptedBadge />}
         {isExperimental(incident) && <ExperimentalBadge />}
         {incident.status && incident.status !== 'new' && (
           <span className="honesty-badge">{statusLabel(incident.status)}</span>
@@ -289,7 +298,44 @@ function DetailPanel({ incident, group, onClose, hot, onHot }) {
       {/* Evidence media: stable elements keyed by incident (polling never reloads the video) */}
       <IncidentMedia key={incident.incident_id} incident={incident} />
 
-      {isExperimental(incident) && (
+      {/* Detection metadata */}
+      <div className="detail-meta-grid">
+        <div className="meta-item">
+          <span className="meta-label">{isScripted(incident) ? 'Confidence' : 'Peak / Mean'}</span>
+          <span className="meta-value">
+            {isScripted(incident) ? 'Not scored' : `${det.peak_confidence?.toFixed(2) ?? '—'} / ${det.mean_confidence?.toFixed(2) ?? '—'}`}
+          </span>
+        </div>
+        <div className="meta-item">
+          <span className="meta-label">Threshold</span>
+          <span className="meta-value">{isScripted(incident) ? 'Not scored' : (det.threshold_applied ?? '—')}</span>
+        </div>
+        <div className="meta-item">
+          <span className="meta-label">{isScripted(incident) ? 'Source' : 'Model'}</span>
+          <span className="meta-value mono">{isScripted(incident) ? 'scripted demo' : (det.model_name || '—')}</span>
+        </div>
+        <div className="meta-item">
+          <span className="meta-label">{isScripted(incident) ? 'Verified' : 'Frames confirmed'}</span>
+          <span className="meta-value">{isScripted(incident) ? 'No' : (det.frames_confirmed || '—')}</span>
+        </div>
+      </div>
+
+      {isScripted(incident) && (
+        <div className="signals-panel scripted-panel">
+          <h3 className="detail-section-title">Scripted demo - not a detector result</h3>
+          <p className="detail-muted">
+            The category was set by the demo script. No detector ran on this clip, nothing was scored and no bounding box or keypoints were drawn
+            by a detector. No automatic call is placed unless the “Scripted incidents: call after delay” demo option is on.
+          </p>
+          <table className="signals-table">
+            <tbody>
+              <tr><td>event window used</td><td>{incident.video_offset_start_s != null ? `${incident.video_offset_start_s.toFixed(1)}-${incident.video_offset_end_s?.toFixed(1)} s of the clip` : '—'}</td></tr>
+              <tr><td>note</td><td>{det.note || 'Scripted demo incident'}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+      {isExperimental(incident) && !isScripted(incident) && (
         <div className="signals-panel">
           <h3 className="detail-section-title">Why it fired (experimental)</h3>
           <p className="detail-muted">
@@ -497,8 +543,8 @@ function DemoControls({ groups, onRefresh, demoState, onDemoState }) {
               { category: 'fire', label: 'Fire', enabled: true }, { category: 'road_accident', label: 'Crash', enabled: true },
             ]).map((c) => (
               <option key={c.category} value={c.category} disabled={!c.enabled}
-                      title={c.enabled ? (c.experimental ? 'Experimental detector' : '') : `Unavailable: ${c.reason}`}>
-                {({ fire: '🔥', road_accident: '🚗', fall: '🧍', assault: '👊', snatching: '👜' })[c.category]} {c.label}{c.experimental ? ' (experimental)' : ''}{c.enabled ? '' : ' - unavailable'}
+                      title={c.enabled ? (c.scripted ? 'SCRIPTED DEMO: the category is set by the demo script, no detector runs on the clip, nothing is scored' : '') : `Unavailable: ${c.reason}`}>
+                {({ fire: '🔥', road_accident: '🚗', fall: '🧍', assault: '👊', snatching: '👜' })[c.category]} {c.label}{c.scripted ? ' (scripted demo)' : c.experimental ? ' (experimental)' : ''}{c.enabled ? '' : ' - unavailable'}
               </option>
             ))}
           </select>
@@ -514,6 +560,18 @@ function DemoControls({ groups, onRefresh, demoState, onDemoState }) {
           const chosen = (demoState?.categories || []).find((c) => c.category === triggerCategory)
           return chosen && !chosen.enabled ? <p className="demo-reason" role="status">{chosen.label} unavailable: {chosen.reason}</p> : null
         })()}
+        <div className="demo-dry-row">
+          <button className={`demo-btn ${demoState?.scripted_auto_call ? 'dry-on' : ''}`} disabled={!demoState}
+                  title="Scripted incidents (Fall, Violence, Snatching) never call automatically by default. When ON and DEMO_MODE is true, an unacknowledged scripted incident calls the allowlisted demo phone after the escalation delay. All call safety rules still apply."
+                  onClick={async () => {
+                    try { await api.post('/demo/scripted-auto-call', { enabled: !demoState?.scripted_auto_call }); onDemoState?.() }
+                    catch (err) { toast.error(err.response?.data?.detail || err.message) }
+                  }}>
+            {demoState?.scripted_auto_call
+              ? `📞 Scripted incidents: call after ${demoState?.escalation_delay_s ?? '?'} s is ON${demoState?.scripted_auto_call_effective ? '' : ' (ignored: DEMO_MODE is off)'}: turn off`
+              : '📞 Scripted incidents: call after delay is OFF (turn on)'}
+          </button>
+        </div>
         <div className="demo-dry-row">
           <button className={`demo-btn ${demoState?.dry_run ? 'dry-on' : ''}`} disabled={!demoState}
                   title="DRY RUN: Telegram stays real, calls are suppressed"
@@ -884,7 +942,7 @@ export default function MapView() {
                       title={cameraOffsets[g.camera_id] ? `Offset on screen only: cameras within ${CLOSE_CAMERA_M} m (stored coordinates unchanged)` : undefined}
                     >
                       <span className="marker-number">{idx + 1}</span>
-                      {isExp && <span className="marker-exp" aria-label="experimental detector">EXP</span>}
+                      {isExp && <span className="marker-exp" aria-label={g.incidents.some(isScripted) ? 'scripted demo incident' : 'experimental detector'}>{g.incidents.some(isScripted) ? 'SCRIPTED' : 'EXP'}</span>}
                       {isNew && <span className="marker-pulse-ring" />}
                     </button>
                     {isHovered && (
@@ -964,6 +1022,10 @@ export default function MapView() {
             <div className="legend-item">
               <span className="legend-dot exp-dot" style={{ background: '#A97BFF' }} />
               <span>Snatch <em className="legend-exp">exp.</em></span>
+            </div>
+            <div className="legend-item" title="Fall, Violence and Snatch demo incidents are created by the demo script: no detector ran">
+              <span className="legend-scripted">SCRIPTED</span>
+              <span>= demo script</span>
             </div>
             <div className="legend-item">
               <span className="legend-dot phone-ring-legend" />

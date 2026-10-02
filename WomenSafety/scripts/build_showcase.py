@@ -143,7 +143,7 @@ def _build(ids, source_db, out: Path, allow_estimated: bool):
             plan["note"] = "No cached services lookup for this camera: nothing invented, services shown as unavailable."
         data["dispatch_plan"] = plan
         db.insert_incident(incident_id, camera.camera_id, data["category"], "new", "test_replay", data["event_start"], data)
-        summary.append((incident_id[:8], data["category"], camera.camera_id, origin, round(data["detection"]["peak_confidence"], 2),
+        summary.append((incident_id[:8], data["category"], camera.camera_id, origin, ("scripted" if data["detection"].get("scripted") else round(data["detection"]["peak_confidence"], 2)),
                         "experimental" if data["detection"].get("experimental") else "", evidence_state))
     print(f"source={source.name} -> {out.relative_to(ROOT) if out.is_relative_to(ROOT) else out}")
     for row in summary:

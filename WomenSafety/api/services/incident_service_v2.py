@@ -24,6 +24,8 @@ from api.services.event_capture import ActiveEvent
 
 db.init_db()
 
+SCRIPTED_NOTE = "Scripted demo incident - category set by the demo script, not a detector result"
+
 _subscribers: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = []
 
 
@@ -101,9 +103,15 @@ def handle_finished_event(camera_id: str, ev: ActiveEvent, evidence_raw: dict, s
         print(f"[IncidentService] QUARANTINED camera={camera_id} reason={reason}")
         return None
 
-    mean_conf = sum(fs.confidence for fs in hit_frames) / len(hit_frames)
-    peak_conf = max(fs.confidence for fs in hit_frames)
-    bboxes = [BBox(label=b["label"], conf=b.get("confidence", best.confidence), box=list(b["box"])) for b in best.boxes]
+    scripted = bool(getattr(ev, "scripted", False))
+    if scripted:
+        # Scripted demo incident: nothing was detected or scored. No confidence, no threshold, no boxes, no keypoints.
+        mean_conf = peak_conf = None
+        bboxes = []
+    else:
+        mean_conf = sum(fs.confidence for fs in hit_frames) / len(hit_frames)
+        peak_conf = max(fs.confidence for fs in hit_frames)
+        bboxes = [BBox(label=b["label"], conf=b.get("confidence", best.confidence), box=list(b["box"])) for b in best.boxes]
 
     try:
         incident = Incident(
@@ -127,13 +135,15 @@ def handle_finished_event(camera_id: str, ev: ActiveEvent, evidence_raw: dict, s
                 model_name=ev.model_name,
                 weights_file=ev.weights_file,
                 weights_sha256=ev.weights_sha256,
-                peak_confidence=round(peak_conf, 4),
-                mean_confidence=round(mean_conf, 4),
-                threshold_applied=ev.threshold_applied,
+                peak_confidence=None if scripted else round(peak_conf, 4),
+                mean_confidence=None if scripted else round(mean_conf, 4),
+                threshold_applied=None if scripted else ev.threshold_applied,
                 frames_confirmed=ev.confirmations,
                 best_frame_bbox=bboxes,
                 experimental=getattr(ev, "experimental", False),
                 signals=dict(getattr(ev, "signals", None) or {}),
+                scripted=scripted, verified=False if scripted else None,
+                note=SCRIPTED_NOTE if scripted else None,
             ),
             evidence=Evidence(
                 best_frame_path=evidence_raw["best_frame_path"],
@@ -176,7 +186,7 @@ def handle_finished_event(camera_id: str, ev: ActiveEvent, evidence_raw: dict, s
     notification_service.enqueue(incident)
     publish_created(incident)
     print(f"[IncidentService] INCIDENT CREATED {incident.incident_id} camera={camera_id} "
-          f"category={incident.category.value} peak_conf={peak_conf:.2f}")
+          f"category={incident.category.value} " + ("scripted demo (not scored)" if scripted else f"peak_conf={peak_conf:.2f}"))
     return incident
 
 

@@ -78,6 +78,18 @@ class DryRun(BaseModel):
     enabled: bool
 
 
+class ScriptedAutoCall(BaseModel):
+    enabled: bool
+
+
+@demo_router.post("/scripted-auto-call")
+async def set_scripted_auto_call(payload: ScriptedAutoCall):
+    """"Scripted incidents: call after delay". Only has an effect while DEMO_MODE is true; every call safety rule still applies. Audited."""
+    settings.SCRIPTED_AUTO_CALL = payload.enabled
+    audit.record("scripted_auto_call", "on" if payload.enabled else "off")
+    return {"scripted_auto_call": settings.SCRIPTED_AUTO_CALL, "effective": settings.SCRIPTED_AUTO_CALL and settings.DEMO_MODE}
+
+
 @demo_router.post("/dry-run")
 async def set_dry_run(payload: DryRun):
     """DRY RUN: Telegram stays real, calls are suppressed. Runtime flag; audited."""

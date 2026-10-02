@@ -58,9 +58,10 @@ class Detection(BaseModel):
     model_name: str
     weights_file: Optional[str] = None
     weights_sha256: Optional[str] = None
-    peak_confidence: float = Field(ge=0.0, le=1.0)
-    mean_confidence: float = Field(ge=0.0, le=1.0)
-    threshold_applied: float
+    # null for SCRIPTED demo incidents: no detector ran, so nothing was scored (never an invented number)
+    peak_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    mean_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    threshold_applied: Optional[float] = None
     frames_confirmed: str  # "N of M", e.g. "3 of 5"
     best_frame_bbox: List[BBox] = Field(default_factory=list)
     # Action detectors (fall / violence / snatch) only. `experimental` drives the dashboard badge, the Telegram/call
@@ -68,6 +69,11 @@ class Detection(BaseModel):
     # frame (e.g. drop velocity, stay-down seconds) -- never keypoints or any biometric data.
     experimental: bool = False
     signals: dict = Field(default_factory=dict)
+    # Scripted demo incidents (api/services/demo_trigger.py): category chosen by the demo script, NOT a detector result.
+    # detector_source is "scripted_demo", the scores above are null, verified is false.
+    scripted: bool = False
+    verified: Optional[bool] = None
+    note: Optional[str] = None
 
 
 class Evidence(BaseModel):

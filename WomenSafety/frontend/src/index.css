@@ -1452,3 +1452,9 @@ body {
 
 /* incident location pin (distinct from the numbered camera marker) */
 .incident-pin { pointer-events: none; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.55)); animation: dispatch-fade 0.3s ease both; }
+
+
+/* ── Scripted demo incidents ─────────────────────────────────────────────── */
+.scripted-badge { background: rgba(132, 198, 255, 0.14); color: #84C6FF; border: 1px solid rgba(132, 198, 255, 0.55); }
+.scripted-panel { border-color: rgba(132, 198, 255, 0.5); background: rgba(132, 198, 255, 0.05); }
+.legend-scripted { font-size: 9px; font-weight: 800; letter-spacing: 0.04em; padding: 1px 5px; border-radius: 4px; background: #84C6FF; color: #0B1119; }

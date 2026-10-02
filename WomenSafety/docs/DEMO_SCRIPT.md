@@ -66,6 +66,28 @@ Open the dashboard at `http://localhost:3000/map`.
 
 ---
 
+## Scripted demos: Fall, Violence, Snatching
+
+**Say this once, before the first one:** "These three are scripted. I picked the clip and the moment; the system did not detect them. No detector runs on these clips and nothing is scored. Fire and crash are the ones with detectors." The dashboard says the same everywhere: **SCRIPTED DEMO** and **EXPERIMENTAL** badges, "Confidence: Not scored", and the Telegram caption and call text both say "scripted demo".
+
+Setup (once): open `data/demo/demo_events.yaml`, set the real `event_start_s`, `event_end_s` and `best_frame_s` for each clip, and delete the `REPLACE_ME: true` line. Until then the three entries show "unavailable" in the Demo panel and a trigger is refused. Check the picker: Fall, Violence and Snatching should be enabled. Keep `DRY RUN` on for rehearsals.
+
+Each one: Demo panel (Ctrl+Shift+D) -> pick the camera -> pick the category -> "Trigger test incident".
+
+| Category | What you do | What the audience sees | What to say |
+|---|---|---|---|
+| **Fall** | trigger Fall on the chosen camera | a marker with a **SCRIPTED** tag and the Fall icon; click it: photo from the chosen moment, the clip (starts a few seconds before the event), "Confidence: Not scored", the "Scripted demo - not a detector result" panel with the event window; the dispatch card shows the nearest **hospital** only; Telegram message "SCRIPTED DEMO - EXPERIMENTAL" with the hospital and distance | "This is a scripted fall. If a camera confirmed a fall, this is how the operator would see it: the evidence, the nearest hospital, and one tap to escalate. The fall detector itself is experimental and I am not claiming it fired here." |
+| **Violence** | trigger Violence | same, with the Violence icon; dispatch card shows the nearest **police station** only | "Scripted violence incident. The category comes from the script. It shows the police dispatch path, not detection accuracy." |
+| **Snatching** | trigger Snatching | same, police station only | "Scripted snatching incident, same flow. Real snatching detection is not demonstrated here." |
+
+Alert behaviour to point out (all three): Telegram gets the photo, location pin and the three buttons (Acknowledge, False alarm, Escalate now). There is **no automatic call**: the call only happens when someone presses Escalate now. The call text starts "This is a test call for the Room 118 demo. Scripted demo incident: fall at ..." If you want to show an automatic call, switch on "Scripted incidents: call after delay" in the Demo panel (only works while DEMO_MODE is on, calls only the allowlisted demo phone, respects DRY RUN, the cooldown and the call cap); Acknowledge cancels it.
+
+Sequence for a rehearsal or the full run: `python scripts/run_demo.py --sequence fire,crash,fall,violence,snatching --delay 25 --dry-run`. Fire and crash use their stored samples (real detectors' sample incidents); the last three are the scripted triggers described above.
+
+Do not: describe a scripted incident as "detected", quote a score for it, or run it on a camera that also has fire/crash detectors on a live scene (see `docs/KNOWN_FALSE_POSITIVES.md`).
+
+---
+
 ## ✅ Pre-Demo Checklist
 
 Run through this **before judges arrive**:

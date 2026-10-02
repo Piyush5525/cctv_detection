@@ -64,6 +64,7 @@ async def get_map_groups(
                                       f"{i['event_start'][:10]}/{i['incident_id']}/thumbnail.jpg",
                     "peak_confidence": i["detection"]["peak_confidence"],
                     "experimental": bool(i["detection"].get("experimental", False)),
+                    "scripted": bool(i["detection"].get("scripted", False)),
                     "status": i["status"],
                 }
                 for i in page

@@ -10,7 +10,7 @@ cd D:\Projects\Detection-Models\WomenSafety
 
 1. **`.env` currently has `ALERTS_ENABLED=true` and `DEMO_MODE=true`.** With alerts on, any trigger sends a real Telegram message to your demo chat, and fire/crash can place a real call to `DEMO_PHONE_NUMBER`. Calls are capped at `MAX_CALLS_PER_HOUR` (5, shared by auto-calls and Escalate now). Every real call you test uses one. Use DRY RUN (below) whenever you do not need to hear the phone ring.
 2. **Fire and crash triggers call immediately, so Acknowledge cannot stop them.** The stored-sample triggers score about 0.68 (fire) and 0.80 (crash), which is at or above `CALL_MIN_CONFIDENCE` (0.6): the call is scheduled with zero delay. To test the Acknowledge / False alarm / no-press paths, start the API with `$env:CALL_MIN_CONFIDENCE = '0.99'` (see section 2); then the 20 s escalation delay applies and the buttons can win the race.
-3. **Fall, Violence and Snatching triggers are disabled** (the real detectors did not fire on the three provided clips; see `docs/DEMO_CLIPS_CHECK.md`). In the Demo panel they show "unavailable" with the reason. If you refilm, replace the clip in `data/demo/`, run `python scripts/demo_clips_check.py`, and a category is enabled only if its detector fired.
+3. **Fall, Violence and Snatching are SCRIPTED demo incidents, not detections** (the real detectors did not fire on the provided clips: `docs/DEMO_CLIPS_CHECK.md`). They need real seconds in `data/demo/demo_events.yaml` (delete the `REPLACE_ME: true` line); until then they show "unavailable" and a trigger is refused. They are labelled SCRIPTED DEMO everywhere; say so out loud. See `docs/DEMO_SCRIPT.md`.
 
 A token helper used below (reads `DEMO_TOKEN` from `.env`, never prints it):
 
@@ -125,7 +125,7 @@ The demo phone should ring within a few seconds for C and D (not in dry run). Th
 
 ## 3. Experimental categories in dry run
 
-Only possible once a clip's detector fires (see READ FIRST item 3). With DRY RUN on, trigger Fall / Violence / Snatching from the Demo panel. Expect: Telegram caption starts "EXPERIMENTAL detection - verify before acting" with confidence and threshold, buttons Acknowledge / False alarm / Escalate now, timeline `call manual_only` (no automatic call, ever); pressing Escalate now gives `call suppressed: dry run`; dashboard shows the EXPERIMENTAL badge, the signals panel and the primary service (fall: hospital; violence and snatching: police station). Until then the picker shows them "unavailable" with the reason and a trigger attempt returns HTTP 409 with that reason.
+Possible once `demo_events.yaml` is filled in (READ FIRST item 3). With DRY RUN on, trigger Fall / Violence / Snatching from the Demo panel. Expect: Telegram caption starts "SCRIPTED DEMO - EXPERIMENTAL: not a detector result" with "Confidence: not scored", buttons Acknowledge / False alarm / Escalate now, timeline `call manual_only` (no automatic call, ever); pressing Escalate now gives `call suppressed: dry run`; dashboard shows the EXPERIMENTAL badge, the signals panel and the primary service (fall: hospital; violence and snatching: police station). Until then the picker shows them "unavailable" with the reason and a trigger attempt returns HTTP 409 with that reason. Optional: the Demo-panel toggle "Scripted incidents: call after delay" (off by default) places the call after the escalation delay unless acknowledged (DEMO_MODE only; DRY RUN, call cap, cooldown and the allowlist still apply).
 
 ## 4. The five-category sequence
 

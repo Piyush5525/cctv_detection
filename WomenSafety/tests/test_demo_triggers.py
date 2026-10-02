@@ -63,58 +63,6 @@ def write_clip(path: Path, seconds: float, fps: int = 20):
     w.release()
 
 
-class AvailabilityTests(unittest.TestCase):
-    def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="ws-demo-root-"))
-        self.rec = self.root / "record.json"
-        self.p = patch.object(demo_clips, "ROOT", self.root)
-        self.p.start()
-
-    def tearDown(self):
-        self.p.stop()
-
-    def test_fire_and_crash_always_enabled(self):
-        for cat in ("fire", "road_accident", "crash"):
-            self.assertEqual(demo_clips.availability(cat, self.rec), (True, ""))
-
-    def test_missing_clip(self):
-        ok, reason = demo_clips.availability("fall", self.rec)
-        self.assertFalse(ok)
-        self.assertIn("clip missing: data/demo/fall.mp4", reason)
-
-    def test_present_but_not_verified(self):
-        write_clip(self.root / "data/demo/fall.mp4", 1)
-        ok, reason = demo_clips.availability("fall", self.rec)
-        self.assertFalse(ok)
-        self.assertIn("not verified", reason)
-
-    def test_detector_did_not_fire_on_the_clip(self):
-        write_clip(self.root / "data/demo/violence.mp4", 1)
-        demo_clips.save_record({"assault": {"fired": False, "peak_score": 0.0, "threshold": 0.28}}, self.rec)
-        ok, reason = demo_clips.availability("violence", self.rec)      # alias accepted
-        self.assertFalse(ok)
-        self.assertIn("detector did not fire on the sample clip", reason)
-
-    def test_enabled_only_when_clip_exists_and_fired_and_unchanged(self):
-        clip = self.root / "data/demo/snatch.mp4"
-        write_clip(clip, 1)
-        demo_clips.save_record({"snatching": {"fired": True, "peak_score": 0.8, "threshold": 0.7}}, self.rec)
-        self.assertEqual(demo_clips.availability("snatching", self.rec), (True, ""))
-        write_clip(clip, 2)                                              # replaced clip => verification no longer applies
-        ok, reason = demo_clips.availability("snatching", self.rec)
-        self.assertFalse(ok)
-        self.assertIn("changed", reason)
-
-    def test_categories_lists_all_five_with_experimental_flags(self):
-        cats = {c["category"]: c for c in demo_clips.categories(self.rec)}
-        self.assertEqual(set(cats), {"fire", "road_accident", "fall", "assault", "snatching"})
-        self.assertTrue(cats["fire"]["enabled"] and not cats["fire"]["experimental"])
-        for c in ("fall", "assault", "snatching"):
-            self.assertTrue(cats[c]["experimental"])
-            self.assertFalse(cats[c]["enabled"])
-            self.assertTrue(cats[c]["reason"])
-
-
 class TriggerTests(unittest.TestCase):
     def setUp(self):
         db.init_db()
@@ -140,66 +88,6 @@ class TriggerTests(unittest.TestCase):
     def _trigger(self, category, camera="CAM-SAMPLE-001"):
         return self.client.post("/api/v1/demo/trigger", json={"camera_id": camera, "category": category}, headers=self.hdr)
 
-    def _fall_clip(self, fired_record=True):
-        seq = S.true_fall(stay_s=4.0) + S.stand_frames(2)
-        write_clip(self.root / "data/demo/fall.mp4", 7.5)
-        demo_clips.save_record({"fall": {"fired": fired_record, "peak_score": 0.9, "threshold": 0.6}}, self.rec)
-        real = clip_replay.replay_clip
-        return seq, patch("api.services.clip_replay.replay_clip", side_effect=lambda *a, **k: real(*a, pose=FakePose(seq), **k))
-
-    def test_clip_missing_is_409_with_reason_and_creates_nothing(self):
-        before = len(incidents.list_incidents(category="fall"))
-        r = self._trigger("fall")
-        self.assertEqual(r.status_code, 409)
-        self.assertIn("clip missing", r.json()["detail"])
-        self.assertEqual(len(incidents.list_incidents(category="fall")), before)
-
-    def test_detector_not_firing_on_the_clip_is_409_and_never_forced(self):
-        write_clip(self.root / "data/demo/snatch.mp4", 2)
-        demo_clips.save_record({"snatching": {"fired": False, "peak_score": 0.0, "threshold": 0.7}}, self.rec)
-        before = len(incidents.list_incidents(category="snatching"))
-        r = self._trigger("snatching")
-        self.assertEqual(r.status_code, 409)
-        self.assertIn("did not fire", r.json()["detail"])
-        self.assertEqual(len(incidents.list_incidents(category="snatching")), before)
-
-    def test_recorded_as_fired_but_replay_does_not_fire_says_so_plainly(self):
-        write_clip(self.root / "data/demo/fall.mp4", 4)
-        demo_clips.save_record({"fall": {"fired": True, "peak_score": 0.9, "threshold": 0.6}}, self.rec)
-        real = clip_replay.replay_clip
-        quiet = S.stand_frames(20)                                        # nobody falls
-        before = len(incidents.list_incidents(category="fall"))
-        with patch("api.services.clip_replay.replay_clip", side_effect=lambda *a, **k: real(*a, pose=FakePose(quiet), **k)):
-            r = self._trigger("fall")
-        self.assertEqual(r.status_code, 409)
-        self.assertIn("did not fire on the sample clip this time", r.json()["detail"])
-        self.assertEqual(len(incidents.list_incidents(category="fall")), before)
-
-    def test_fired_creates_a_real_experimental_incident_through_the_same_pipeline(self):
-        seq, replay_patch = self._fall_clip()
-        with replay_patch:
-            r = self._trigger("fall")
-        self.assertEqual(r.status_code, 200, r.text)
-        inc = incidents.get_incident(r.json()["incident_id"])
-        self.assertEqual(inc["category"], "fall")
-        self.assertEqual(inc["source"], "test_replay")
-        self.assertIn("synthetic demo trigger", inc["evidence"]["note"])
-        det = inc["detection"]
-        self.assertTrue(det["experimental"])
-        self.assertEqual(det["detector_source"], "pose-fall-rules")
-        self.assertGreaterEqual(det["peak_confidence"], det["threshold_applied"])
-        self.assertIn("stay_down_s", det["signals"])
-        self.assertNotIn("keypoints", json.dumps(inc))
-        self.assertIsNotNone(inc["video_offset_start_s"])                # replay position recorded
-        for key in ("best_frame_path", "annotated_frame_path", "thumbnail_path", "clip_path"):
-            self.assertTrue(Path(inc["evidence"][key]).exists(), key)
-        best = cv2.imread(inc["evidence"]["best_frame_path"])
-        self.assertTrue(((best[..., 2] > 200) & (best[..., 1] < 80) & (best[..., 0] < 80)).any(), "overlay missing on best frame")
-
-    def test_violence_alias_and_unknown_category(self):
-        self.assertEqual(self._trigger("violence").status_code, 409)       # alias of assault: clip missing here
-        self.assertEqual(self._trigger("no-such").status_code, 422)
-
     def test_trigger_requires_the_token(self):
         r = self.client.post("/api/v1/demo/trigger", json={"camera_id": "CAM-SAMPLE-001", "category": "fall"})
         self.assertEqual(r.status_code, 403)
@@ -208,7 +96,7 @@ class TriggerTests(unittest.TestCase):
         frame = np.full((480, 640, 3), 120, np.uint8)
         pick = {"frame": frame, "confidence": 0.9, "boxes": [{"class": "fire", "confidence": 0.9, "box": [10, 10, 200, 200]}], "t_s": 3.0,
                 "real_detection": False, "detector": None}
-        with patch.object(demo_trigger, "_pick_frame", return_value=pick), patch.object(demo_trigger, "trigger_action_incident",
+        with patch.object(demo_trigger, "_pick_frame", return_value=pick), patch.object(demo_trigger, "trigger_scripted_incident",
                                                                                         side_effect=AssertionError("fire must not use the action path")):
             inc = demo_trigger.trigger_demo_incident("CAM-SAMPLE-001", "fire")
         self.assertEqual(inc["category"], "fire")
