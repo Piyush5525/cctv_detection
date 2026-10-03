@@ -51,12 +51,15 @@
   It uses the phone's HTTP video stream over a local hotspot —
   this is not a production-grade camera installation.
 
-## 🎬 Experimental Action Detectors (Fall, Violence, Snatching)
+## 🎬 Scripted Demo Incidents (Fall, Violence, Snatching)
 
-- **Calibrated on one clip per class.** Thresholds and gates were adjusted until each detector fired on its own provided clip (and not on the other four clips or on office_fight, fire, crash and two further snatch videos). That makes the demo incidents real detector output, but it is not evidence of accuracy: with one clip each, over-fitting is the expected state. Violence on `office_fight.mp4` does not fire (a miss).
-- Incidents carry the real score, threshold and signals and the EXPERIMENTAL label; no automatic call.
-- Violence reads CLIP's raw top-1 label with cosine >= 0.22 (the legacy 0.28 cutoff never passed on real fight frames), which is a weak signal guarded by pose gates and N-of-M smoothing.
-- The provided clips' origin and permission are the owner's responsibility (`data/demo/SOURCES.md`).
+- **These are not detections.** A scripted incident is created by the demo script from a provided clip and a time window in `data/demo/demo_events.yaml`. The category is chosen by the script. **No detector runs on the clip**, nothing is scored, and the incident stores no confidence, no threshold and no bounding boxes (`detector_source = scripted_demo`, `verified = false`, `source = test_replay`).
+- They never prove that a fall, violence or snatching detector works. The real fall, violence and snatch detectors did not fire on the provided clips (`docs/DEMO_CLIPS_CHECK.md`); only fire and crash have working detectors in this demo.
+- Everywhere one appears it is labelled **SCRIPTED DEMO** and **EXPERIMENTAL**: map markers and popups, the detail panel ("Confidence: Not scored"), the Telegram caption and the call text ("Scripted demo incident: ...").
+- The photo is the clip frame at `best_frame_s`, unmodified. If the repo's real pose model finds people in that frame, their skeletons are drawn only into the separate "annotated frame" and the note says so; that overlay is not a detection of the category.
+- The dispatch services come from the cached nearby-services lookup only (no SerpApi call); if the location has no cache entry the services are shown as unavailable, never invented.
+- Default alert policy is unchanged: dashboard + Telegram, no automatic call; "Escalate now" places the call. The optional "Scripted incidents: call after delay" toggle (off by default) only works while DEMO_MODE is on and still obeys ALERTS_ENABLED, DRY RUN, the cooldown (60 s per camera and category for these), the call cap and the allowlist / hard-blocked numbers.
+- The provided clips' origin and permission are the owner's responsibility (`data/demo/SOURCES.md`); the clips and screenshots showing their frames are kept out of git.
 
 ## 🧑‍💻 Human Confirmation
 
