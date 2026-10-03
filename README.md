@@ -474,3 +474,5 @@ CRASH_DETECTION=1       # ✅ ON
 ## 📄 License
 
 This project is developed for the hackathon demo. See `docs/LIMITATIONS.md` for scope and limitations.
+#   c c t v _ d e t e c t i o n  
+ 
