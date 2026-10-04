@@ -97,13 +97,45 @@ class ScriptedBase(unittest.TestCase):
 
 
 class ConfigTests(ScriptedBase):
+    def test_valid_config_enables_all_three(self):
+        cfg = demo_events.load()
+        self.assertFalse(cfg["placeholder"])
+        self.assertEqual(sorted(cfg["events"]), ["fall", "snatching", "violence"])
+        self.assertEqual(cfg["errors"], {})
+        ev = cfg["events"]["violence"]
+        self.assertEqual((ev.category, ev.start_s, ev.end_s, ev.best_s, ev.clip_rel), ("assault", 2.0, 5.5, 3.5, "data/demo/violence.mp4"))
+        cats = {c["category"]: c for c in demo_clips.categories()}
+        self.assertEqual({k: cats[k]["enabled"] for k in ("fire", "road_accident", "fall", "assault", "snatching")}, {k: True for k in ("fire", "road_accident", "fall", "assault", "snatching")})
+        self.assertTrue(all(cats[k]["scripted"] and cats[k]["experimental"] for k in ("fall", "assault", "snatching")))
+        self.assertFalse(cats["fire"]["scripted"])
 
+    def test_replace_me_marker_disables_every_scripted_category_and_refuses_the_trigger(self):
+        write_yaml(self.yaml, placeholder=True)
+        cfg = demo_events.load()
+        self.assertTrue(cfg["placeholder"])
+        for c in demo_clips.categories():
+            if c["category"] in ("fall", "assault", "snatching"):
+                self.assertFalse(c["enabled"])
+                self.assertIn("REPLACE_ME", c["reason"])
+        for cat in ("fall", "violence", "assault", "snatching", "snatch"):
+            with self.assertRaises(demo_trigger.DemoUnavailable) as cm:
+                demo_trigger.trigger_demo_incident(CAMERA, cat)
+            self.assertIn("REPLACE_ME", str(cm.exception))
+        self.assertEqual(incidents.list_incidents(camera_id=CAMERA, category="fall"), [])
 
     def test_fire_and_crash_stay_enabled_whatever_the_yaml_says(self):
         write_yaml(self.yaml, placeholder=True)
         cats = {c["category"]: c for c in demo_clips.categories()}
         self.assertTrue(cats["fire"]["enabled"] and cats["road_accident"]["enabled"])
 
+    def test_missing_clip_disables_only_that_category(self):
+        (self.root / "data" / "demo" / "fall.mp4").unlink()
+        cfg = demo_events.load()
+        self.assertIn("clip missing: data/demo/fall.mp4", cfg["errors"]["fall"])
+        self.assertEqual(sorted(cfg["events"]), ["snatching", "violence"])
+        with self.assertRaises(demo_trigger.DemoUnavailable) as cm:
+            demo_trigger.trigger_demo_incident(CAMERA, "fall")
+        self.assertIn("clip missing", str(cm.exception))
 
     def test_missing_entry_is_disabled_with_a_reason(self):
         write_yaml(self.yaml, entries={"fall": ENTRIES["fall"], "snatching": ENTRIES["snatching"]})
@@ -138,6 +170,131 @@ class ConfigTests(ScriptedBase):
         self.assertIn("not found", demo_events.availability("fall")[1])
 
 
+class TriggerTests(ScriptedBase):
+    def _no_detector(self):
+        """Any detector (fire/crash registry, action engine, event verdict feed) raising makes a test fail if it is invoked."""
+        boom = AssertionError("a detector was invoked on a scripted clip")
+        return [patch("api.services.action_detectors.engine.ActionEngine.process", side_effect=boom),
+                patch("api.services.detector_interface.DetectorRegistry.__init__", side_effect=boom),
+                patch("api.services.event_capture.EventCapturePipeline.feed_detection", side_effect=boom),
+                patch("api.services.clip_replay.replay_clip", side_effect=boom)]
+
+    def trigger(self, key, **kw):
+        for p in self._no_detector():
+            p.start()
+            self.addCleanup(p.stop)
+        return demo_trigger.trigger_demo_incident(CAMERA, key)
+
+    def test_each_category_creates_a_scripted_incident_with_null_confidence_and_no_detector(self):
+        for key, (start, end, best) in ENTRIES.items():
+            with self.subTest(key=key), patch("api.services.nearby_services.lookup_cached", return_value=LOOKUP):
+                created = self.trigger(key)
+                inc = self.wait_plan(created["incident_id"])
+                det = inc["detection"]
+                self.assertEqual(inc["category"], CATEGORY[key])
+                self.assertEqual(inc["source"], "test_replay")
+                self.assertEqual((det["peak_confidence"], det["mean_confidence"], det["threshold_applied"]), (None, None, None))
+                self.assertEqual((det["detector_source"], det["scripted"], det["verified"], det["experimental"]), ("scripted_demo", True, False, True))
+                self.assertEqual((det["signals"], det["best_frame_bbox"]), ({}, []))
+                self.assertEqual(det["note"], "Scripted demo incident - category set by the demo script, not a detector result")
+                self.assertTrue(inc["evidence"]["note"].startswith("Scripted demo incident - category set by the demo script, not a detector result."))
+                self.assertIn(f"{start:g}-{end:g} s", inc["evidence"]["note"])
+                self.assertIn(f"best frame at {best:g} s", inc["evidence"]["note"])
+                self.assertAlmostEqual(inc["video_offset_start_s"], start, delta=0.2)
+                self.assertAlmostEqual(inc["video_offset_end_s"], end, delta=0.2)
+
+    def test_dispatch_services_follow_dispatch_rules_from_the_cache_only(self):
+        expect = {"fall": [("hospital", "Test Hospital")], "violence": [("police", "Test Police Station")], "snatching": [("police", "Test Police Station")]}
+        for key, want in expect.items():
+            with self.subTest(key=key), patch("api.services.nearby_services.lookup_cached", return_value=LOOKUP):
+                inc = self.wait_plan(self.trigger(key)["incident_id"])
+                got = [(a["service_category"], (a.get("service") or {}).get("title")) for a in inc["dispatch_plan"]["assignments"]]
+                self.assertEqual(got, want)
+                self.assertEqual(inc["dispatch_plan"]["nearby_services_source"], "cache")
+
+    def test_uncached_cell_shows_services_unavailable_and_never_calls_serpapi_or_fabricates(self):
+        with patch("api.services.nearby_services.lookup_cached", return_value=None), \
+                patch.object(ns, "get_nearby_services", side_effect=AssertionError("a scripted incident must not use the live lookup")), \
+                patch("api.services.nearby_services._query_serpapi", side_effect=AssertionError("SerpApi must not be called")):
+            inc = self.wait_plan(self.trigger("fall")["incident_id"])
+        plan = inc["dispatch_plan"]
+        self.assertEqual(plan["nearby_services_source"], "unavailable")
+        self.assertEqual([(a["service_category"], a["status"]) for a in plan["assignments"]], [("hospital", "unavailable")])
+        self.assertNotIn("service", plan["assignments"][0])
+
+    def test_evidence_files_and_the_clip_are_browser_playable(self):
+        with patch("api.services.nearby_services.lookup_cached", return_value=LOOKUP):
+            inc = self.wait_plan(self.trigger("fall")["incident_id"])
+        ev = inc["evidence"]
+        names = {k: Path(ev[k]).name for k in ("best_frame_path", "thumbnail_path", "clip_path")}
+        self.assertEqual(names, {"best_frame_path": "best_frame.jpg", "thumbnail_path": "thumbnail.jpg", "clip_path": "clip.mp4"})
+        self.assertIsNone(ev["annotated_frame_path"])                     # nothing real to draw: no annotated frame, no overlay
+        for k in ("best_frame_path", "thumbnail_path", "clip_path"):
+            self.assertTrue(Path(ev[k]).exists(), k)
+        self.assertEqual(Path(ev["best_frame_path"]).parent.parent.parent.name, CAMERA)    # same camera/date/incident layout as every incident
+        probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,pix_fmt:format=duration",
+                                           "-of", "json", ev["clip_path"]], capture_output=True, text=True).stdout)
+        self.assertEqual((probe["streams"][0]["codec_name"], probe["streams"][0]["pix_fmt"]), ("h264", "yuv420p"))
+        head = Path(ev["clip_path"]).read_bytes()
+        self.assertLess(head.find(b"moov"), head.find(b"mdat"))              # +faststart
+        # the clip covers the pre-event seconds + the event window (fall: 3 s of pre-event, window 3-6 s => about 6 s)
+        self.assertAlmostEqual(float(probe["format"]["duration"]), 6.0, delta=0.6)
+        # the best frame is the frame at best_frame_s, with NO overlay (frame counter text drawn into the clip shows frame 40 = 4.0 s)
+        best = cv2.imread(ev["best_frame_path"])
+        self.assertEqual(best.shape[:2], (240, 320))
+
+    def test_best_frame_has_no_overlay_and_a_real_skeleton_only_goes_into_the_annotated_frame(self):
+        skeleton = [{"label": "", "confidence": 0.0, "box": [50, 50, 150, 220], "skeleton_only": True,
+                     "keypoints": [[100 + i, 60 + 10 * i, 0.9] for i in range(17)]}]
+        with patch.object(demo_trigger, "_real_skeleton_boxes", return_value=skeleton), patch("api.services.nearby_services.lookup_cached", return_value=LOOKUP):
+            inc = self.wait_plan(self.trigger("violence")["incident_id"])
+        ev = inc["evidence"]
+        self.assertTrue(Path(ev["annotated_frame_path"]).exists())
+        raw, annotated = cv2.imread(ev["best_frame_path"]), cv2.imread(ev["annotated_frame_path"])
+        self.assertTrue(((annotated[..., 1] > 180) & (annotated[..., 2] < 80)).any(), "skeleton drawn in the annotated frame")
+        self.assertFalse(((raw[..., 1] > 180) & (raw[..., 2] < 80) & (raw[..., 0] < 80)).any(), "best frame stays raw")
+        self.assertIn("skeleton in the annotated frame comes from the real pose model", ev["note"])
+        text = json.dumps(inc)
+        self.assertNotIn("keypoints", text)                                  # never stored as data
+        self.assertEqual(inc["detection"]["best_frame_bbox"], [])
+
+    def test_cooldown_for_the_camera_and_category_returns_a_clear_message(self):
+        settings.ACTION_COOLDOWN_S = 60.0
+        global_notification_service._last_by_key[(CAMERA, "fall")] = time.monotonic()
+        with self.assertRaises(demo_trigger.DemoUnavailable) as cm:
+            demo_trigger.trigger_demo_incident(CAMERA, "fall")
+        self.assertRegex(str(cm.exception), r"Cooldown active for Fall on this camera: wait \d+ s")
+        self.assertEqual(incidents.list_incidents(camera_id=CAMERA, category="fall"), [])
+        with patch("api.services.nearby_services.lookup_cached", return_value=LOOKUP):
+            self.wait_plan(demo_trigger.trigger_demo_incident(CAMERA, "snatching")["incident_id"])   # other category: not in cooldown
+
+    def test_trigger_endpoint_returns_409_with_the_reason_and_200_when_valid(self):
+        settings.DEMO_TOKEN = "t"
+        from fastapi.testclient import TestClient
+        from api.main import app
+        try:
+            with TestClient(app) as client:
+                h = {"X-Demo-Token": "t"}
+                write_yaml(self.yaml, placeholder=True)
+                r = client.post("/api/v1/demo/trigger", json={"camera_id": CAMERA, "category": "fall"}, headers=h)
+                self.assertEqual(r.status_code, 409)
+                self.assertIn("REPLACE_ME", r.json()["detail"])
+                write_yaml(self.yaml)
+                (self.root / "data" / "demo" / "violence.mp4").unlink()
+                r = client.post("/api/v1/demo/trigger", json={"camera_id": CAMERA, "category": "violence"}, headers=h)
+                self.assertEqual((r.status_code, "clip missing" in r.json()["detail"]), (409, True))
+                with patch("api.services.nearby_services.lookup_cached", return_value=LOOKUP):
+                    r = client.post("/api/v1/demo/trigger", json={"camera_id": CAMERA, "category": "snatching"}, headers=h)
+                self.assertEqual(r.status_code, 200, r.text)
+                self.assertEqual(r.json()["category"], "snatching")
+                self.assertIsNone(r.json()["detection"]["peak_confidence"])
+                state = client.get("/api/v1/demo-state").json()
+                cats = {c["category"]: c for c in state["categories"]}
+                self.assertTrue(cats["snatching"]["enabled"] and cats["fall"]["enabled"])
+                self.assertFalse(cats["assault"]["enabled"])
+                self.assertIn("clip missing", cats["assault"]["reason"])
+        finally:
+            settings.DEMO_TOKEN = ""
 
 
 def scripted_incident_dict(category="fall", camera_id=None, **detection_over):

@@ -101,45 +101,81 @@ def _real_skeleton_boxes(frame):
         return []
 
 
-def trigger_action_incident(camera_id: str, category: str):
-    """fall / violence (assault) / snatching: replay the provided clip through the REAL detector and the SAME
-    EventCapturePipeline (api/services/clip_replay.py). Returns the first incident created; if the detector does not
-    fire, says so plainly and creates nothing."""
-    from api.services import demo_clips
-    from api.services.clip_replay import replay_clip
-    category = demo_clips.ALIASES.get(category, category)
-    enabled, reason = demo_clips.availability(category)
-    if not enabled:
-        raise DemoUnavailable(reason)
-    detector, clip, label = demo_clips.ACTION_DEMO[category]
+def trigger_scripted_incident(camera_id: str, category: str):
+    """fall / violence (assault) / snatching: a SCRIPTED incident built from the provided clip and its entry in
+    data/demo/demo_events.yaml. NO detector runs on the clip: nothing is scored, no box or keypoints are invented. The evidence
+    (best frame at best_frame_s, thumbnail, clip of the event window with the pre-event seconds) goes through the same
+    EventCapturePipeline writer as every other incident."""
+    from api.services import demo_events
+    from api.services.notification_service import notification_service
+    try:
+        ev = demo_events.get_event(category)
+    except demo_events.ScriptedUnavailable as exc:
+        raise DemoUnavailable(str(exc))
+    remaining = notification_service.cooldown_remaining(camera_id, ev.category)
+    if remaining > 0:
+        raise DemoUnavailable(f"Cooldown active for {ev.label} on this camera: wait {remaining:.0f} s (the per-camera, per-category alert cooldown "
+                              f"also protects the call cap). No incident was created.")
+    cap = cv2.VideoCapture(str(ev.clip))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    pre_start = max(0.0, ev.start_s - settings.PRE_EVENT_SECONDS)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, int(pre_start * fps))
+    best_frame, boxes = None, []
     created = []
+    window = f"{ev.start_s:g}-{ev.end_s:g} s"
+    note_tail = f" Event window {window} of {ev.clip_rel}; best frame at {ev.best_s:g} s."
+    if ev.place_note:
+        note_tail += f" Place note: {ev.place_note}."
 
-    def on_event(cam, ev, evidence):
-        a, b = evidence.get("video_offset_start_s"), evidence.get("video_offset_end_s")
-        span = f"{a:.1f}-{b:.1f} s" if a is not None and b is not None else "clip"
-        note = (f"synthetic demo trigger: replay of {clip} ({span}) through the real {detector} detector; "
-                f"peak score {ev.peak_score:.2f} vs threshold {ev.threshold_applied}; EXPERIMENTAL")
-        inc = incidents.handle_finished_event(cam, ev, evidence, source=SourceKind.TEST_REPLAY, evidence_note=note)
-        if inc:
-            created.append(inc.to_dict())
-            return inc.to_dict()
-        return None
+    def ready(cam, event, evidence):
+        note = incidents.SCRIPTED_NOTE + "." + note_tail
+        if evidence.get("annotated_frame_path"):
+            note += " The skeleton in the annotated frame comes from the real pose model on that frame; it is not a detection of this category."
+        incident = incidents.handle_finished_event(cam, event, evidence, source=SourceKind.TEST_REPLAY, evidence_note=note)
+        if incident:
+            created.append(incident.to_dict())
 
-    report = replay_clip(_ROOT / clip, camera_id, action_names=[detector], on_event=on_event)
-    d = report.detectors.get(detector, {})
+    pipeline = EventCapturePipeline(camera_id, ready, lambda *args: incidents.handle_encode_failure(*args))
+    try:
+        base = datetime.now(timezone.utc) - timedelta(seconds=(ev.end_s - pre_start) + 5)
+        started, best_marked, last_ts = False, False, base
+        idx = int(pre_start * fps)
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            t = idx / fps
+            idx += 1
+            if t > ev.end_s:
+                break
+            ts = base + timedelta(seconds=t - pre_start)
+            last_ts = ts
+            is_best = False
+            if not best_marked and t >= ev.best_s:          # best_frame_s >= event_start_s (validated), so the event is open or opens now
+                boxes = _real_skeleton_boxes(frame)
+                is_best, best_marked = True, True
+            if not started and t >= ev.start_s:
+                pipeline.start_scripted_event(ev.category, ts, frame, t, best=is_best, best_boxes=boxes if is_best else None)
+                started = True
+            else:
+                pipeline.add_raw_frame(frame, ts, t, best=is_best, best_boxes=boxes if is_best else None)
+        cap.release()
+        if not started or not best_marked:
+            raise DemoUnavailable("the clip ended before the scripted event window; check data/demo/demo_events.yaml")
+        pipeline.finish_scripted_event(last_ts)
+        pipeline._encode_queue.join()
+    finally:
+        pipeline.close()
     if not created:
-        if report.events or report.quarantined:
-            raise DemoUnavailable(f"the {label} detector fired but the event was quarantined (camera has no usable location, or evidence could not be built)")
-        raise DemoUnavailable(f"the {label} detector did not fire on the sample clip this time (peak score {d.get('peak_score', 0)} vs threshold "
-                              f"{d.get('threshold', '?')}); no incident was created")
-    audit.record("demo_trigger", f"{category} on {camera_id}: {len(created)} incident(s) from the real {detector} detector")
+        raise DemoUnavailable("the scripted event could not be saved (quarantined: camera has no usable location, or ffmpeg/evidence failed)")
+    audit.record("demo_trigger", f"{ev.key} on {camera_id}: scripted demo incident (no detector run)")
     return created[0]
 
 
 def trigger_demo_incident(camera_id: str, category: str):
     from api.services import demo_clips
     if demo_clips.ALIASES.get(category, category) in demo_clips.ACTION_DEMO:
-        return trigger_action_incident(camera_id, category)
+        return trigger_scripted_incident(camera_id, category)
     source = SAMPLES.get(category)
     if source is None:
         raise ValueError("category must be fire, crash, road_accident, fall, violence (assault) or snatching")
