@@ -96,7 +96,7 @@ class TriggerTests(unittest.TestCase):
         frame = np.full((480, 640, 3), 120, np.uint8)
         pick = {"frame": frame, "confidence": 0.9, "boxes": [{"class": "fire", "confidence": 0.9, "box": [10, 10, 200, 200]}], "t_s": 3.0,
                 "real_detection": False, "detector": None}
-        with patch.object(demo_trigger, "_pick_frame", return_value=pick), patch.object(demo_trigger, "trigger_scripted_incident",
+        with patch.object(demo_trigger, "_pick_frame", return_value=pick), patch.object(demo_trigger, "trigger_action_incident",
                                                                                         side_effect=AssertionError("fire must not use the action path")):
             inc = demo_trigger.trigger_demo_incident("CAM-SAMPLE-001", "fire")
         self.assertEqual(inc["category"], "fire")

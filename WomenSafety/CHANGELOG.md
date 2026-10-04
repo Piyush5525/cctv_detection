@@ -1,3 +1,12 @@
+# Fall / Violence / Snatching are real detector results now (2026-10-03)
+
+- **What changed:** the three detectors were recalibrated so they fire for real on the provided clips, and the Demo-panel triggers replay the clip through the real detector and the shared event pipeline again (scripted triggers are no longer routed; their modules stay dormant). Incidents store the real score, threshold, signals and EXPERIMENTAL flag, with no SCRIPTED labels. Availability follows `outputs/demo_clip_check.json` (detector fired on that exact file, SHA-256).
+- **Fall:** new path "lost track, then low" (pose often drops a person mid-fall; a new low track nearby that stays down >= 2 s, with head drop and shrunken height). Own-clip result 0.731 vs 0.6.
+- **Violence:** raw CLIP top-1 with cosine >= 0.22 (was 0.28), a merged-blob people gate (tangled fighters become one pose box), gap-bridged limb motion with a lower motion threshold. 0.242 vs 0.22.
+- **Snatch:** new path "sustained contact, speed burst, takedown or separation" with an 8 s window. 0.923 vs 0.7.
+- **Verification:** five-clip replay with all five detectors: fire (0.761) and crash (0.78) unchanged; each action detector fires only on its own clip. Extra clips (office_fight, fire, crash, two snatch videos, the 62 s original of the snatch clip) gave no false alarm except the original snatch video, which contains the clip's event. Known pre-existing: fire and crash also fire on fall.mp4, crash on snatch.mp4.
+- **Honest caveat:** one clip per class; this is calibration, not accuracy. Violence misses office_fight.mp4. Synthetic tests added for the new paths and their negatives (165 Python tests passing after removing the scripted-trigger tests). Restart the API to pick up the code.
+
 # Why the scripted Fall sent no Telegram or call; Alerts toggle (2026-10-03)
 
 - **Cause (read from the running server's incident):** the Fall incident's timeline was `telegram skipped: ALERTS_ENABLED is false`, `call skipped: ALERTS_ENABLED is false`. `.env` currently has `ALERTS_ENABLED=false`, the master gate for every outbound message and call, so nothing was sent by design; the routing itself (plan from cache, hospital, no auto-call by policy) was fine. Nothing in the UI said so.
