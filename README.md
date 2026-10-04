@@ -1,8 +1,8 @@
-All run commands (dashboard, CAM 001 phone camera, demo controls, smoke tests): see WomenSafety/run.md
-
 # 🚨 Incident Command Dashboard
 
 Real-time CCTV incident detection system with fire, crash, violence, fall, and snatch detection. Features a live map dashboard, Telegram alerts, voice-call escalation, and a dispatch plan with nearest emergency services.
+
+> All run commands (dashboard, CAM 001 phone camera, demo controls, smoke tests): see [WomenSafety/run.md](WomenSafety/run.md)
 
 ---
 
@@ -474,6 +474,3 @@ CRASH_DETECTION=1       # ✅ ON
 ## 📄 License
 
 This project is developed for the hackathon demo. See `docs/LIMITATIONS.md` for scope and limitations.
-#   c c t v _ d e t e c t i o n 
- 
- 

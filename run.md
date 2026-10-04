@@ -27,7 +27,7 @@ python run_dashboard.py --mode build
 Check the phone is reachable (phone and laptop on the same Wi-Fi, IP Webcam app started):
 
 ```powershell
-Test-NetConnection <PHONE_IP> -Port 8080
+Test-NetConnection 10.172.7.13 -Port 8080
 ```
 
 `TcpTestSucceeded : True` means it is reachable. Then test the stream (no address is printed):
@@ -59,14 +59,14 @@ If the phone IP changed, look it up in the IP Webcam app (it shows the address),
 ### CAM 002 (second phone)
 
 ```powershell
-Test-NetConnection <PHONE_2_IP> -Port 8080
+Test-NetConnection 10.172.4.180 -Port 8080
 python scripts/check_camera.py CAM-002
 ```
 
 Settings in `.env` (same pattern as CAM 001; restart the API after changing them):
 
 ```
-PHONE_CAM002_URL=http://<PHONE_2_IP>:8080/video
+PHONE_CAM002_URL=http://10.172.4.180:8080/video
 PHONE_CAM002_LAT=<number>
 PHONE_CAM002_LNG=<number>
 ```
@@ -123,7 +123,7 @@ npm run dev
 ## 6. Pre-demo checklist
 
 1. `python run_dashboard.py --mode api --no-build` (one instance, http://localhost:8000/map loads)
-2. `Test-NetConnection <PHONE_IP> -Port 8080` is True, then `python scripts/check_camera.py CAM-001`
+2. `Test-NetConnection 10.172.5.41 -Port 8080` is True, then `python scripts/check_camera.py CAM-001`
 3. `curl http://localhost:8000/api/v1/cameras/status` shows CAM-001 (and CAM-002) `online`
 4. Demo button, Reset demo (or Load showcase) for a clean map
 5. `ALERTS_ENABLED=true` in `.env` only when you want real Telegram and call alerts
